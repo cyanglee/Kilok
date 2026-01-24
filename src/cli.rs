@@ -57,6 +57,14 @@ pub enum Commands {
     /// Show current tracking status
     Status,
 
+    /// Sync local heartbeat cache to database (called by statusline)
+    /// Also auto-closes idle sessions based on transcript activity
+    Sync {
+        /// Project path (optional, for checking idle status)
+        #[arg(short, long)]
+        path: Option<String>,
+    },
+
     /// Manage configuration
     Config {
         #[command(subcommand)]

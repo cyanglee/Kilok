@@ -2,6 +2,7 @@ mod cli;
 mod config;
 mod db;
 mod git;
+mod idle;
 mod models;
 mod report;
 mod tracker;
@@ -10,75 +11,130 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::Parser;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use cli::{Cli, Commands, ConfigAction, ProjectsAction};
 use config::EffectiveConfig;
 use db::Database;
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Start { path } => cmd_start(&path),
-        Commands::Heartbeat { path } => cmd_heartbeat(&path),
-        Commands::Stop { path } => cmd_stop(&path),
+        Commands::Start { path } => cmd_start(&path).await,
+        Commands::Heartbeat { path } => cmd_heartbeat(&path).await,
+        Commands::Stop { path } => cmd_stop(&path).await,
         Commands::Report {
             month,
             project,
             format,
             output,
             all_formats,
-        } => cmd_report(month, project, format, output, all_formats),
-        Commands::Status => cmd_status(),
+        } => cmd_report(month, project, format, output, all_formats).await,
+        Commands::Status => cmd_status().await,
+        Commands::Sync { path } => cmd_sync(path).await,
         Commands::Config { action } => match action {
             ConfigAction::Init => cmd_config_init(),
             ConfigAction::Edit => cmd_config_edit(),
             ConfigAction::Show => cmd_config_show(),
         },
         Commands::Projects { action } => match action {
-            ProjectsAction::List => cmd_projects_list(),
-            ProjectsAction::SetName { path, name } => cmd_projects_set_name(&path, &name),
+            ProjectsAction::List => cmd_projects_list().await,
+            ProjectsAction::SetName { path, name } => cmd_projects_set_name(&path, &name).await,
         },
     }
 }
 
-fn get_db() -> Result<Database> {
-    let config = EffectiveConfig::load(None)?;
-    Database::open(&config.database_path)
+async fn open_db(config: &EffectiveConfig) -> Result<Database> {
+    if config.is_turso_enabled() {
+        if config.turso_remote_only {
+            // Pure remote mode - no local cache, safer for concurrent access
+            Database::open_remote(
+                config.turso_url.as_ref().unwrap(),
+                config.turso_auth_token.as_ref().unwrap(),
+            ).await
+        } else {
+            // Embedded replica mode - local cache with sync
+            Database::open_replica(
+                &config.database_path,
+                config.turso_url.as_ref().unwrap(),
+                config.turso_auth_token.as_ref().unwrap(),
+            ).await
+        }
+    } else {
+        Database::open_local(&config.database_path).await
+    }
 }
 
-fn cmd_start(path: &str) -> Result<()> {
+async fn cmd_start(path: &str) -> Result<()> {
     let project_path = PathBuf::from(path).canonicalize()
         .with_context(|| format!("Invalid path: {}", path))?;
 
     let config = EffectiveConfig::load(Some(&project_path))?;
-    let db = Database::open(&config.database_path)?;
+    let db = open_db(&config).await?;
 
-    tracker::start_session(&db, &project_path, &config)
+    tracker::start_session(&db, &project_path, &config).await
 }
 
-fn cmd_heartbeat(path: &str) -> Result<()> {
+async fn cmd_heartbeat(path: &str) -> Result<()> {
     let project_path = PathBuf::from(path).canonicalize()
         .with_context(|| format!("Invalid path: {}", path))?;
 
     let config = EffectiveConfig::load(Some(&project_path))?;
-    let db = Database::open(&config.database_path)?;
 
-    tracker::record_heartbeat(&db, &project_path)
+    // Check if project is idle (based on transcript mtime)
+    if idle::is_project_idle(&project_path, config.idle_timeout_minutes) {
+        // Project is idle, skip heartbeat
+        return Ok(());
+    }
+
+    // Write heartbeat to local cache (no DB access)
+    write_local_heartbeat(&project_path)?;
+
+    Ok(())
 }
 
-fn cmd_stop(path: &str) -> Result<()> {
+/// Write a heartbeat to local cache file
+/// Format: {"timestamp":"2026-01-24T00:12:34Z","project_path":"/path/to/project","unix_ts":1234567890}
+fn write_local_heartbeat(project_path: &Path) -> Result<()> {
+    use std::io::Write;
+
+    let home_dir = dirs::home_dir().context("Failed to get home directory")?;
+    let cache_dir = home_dir.join(".cache").join("claude-time-tracker");
+    fs::create_dir_all(&cache_dir)?;
+
+    let heartbeat_file = cache_dir.join("heartbeats.jsonl");
+    let now = Utc::now();
+
+    let entry = serde_json::json!({
+        "timestamp": now.to_rfc3339(),
+        "project_path": project_path.to_string_lossy(),
+        "unix_ts": now.timestamp()
+    });
+
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&heartbeat_file)
+        .with_context(|| format!("Failed to open heartbeat cache: {}", heartbeat_file.display()))?;
+
+    writeln!(file, "{}", entry)?;
+
+    Ok(())
+}
+
+async fn cmd_stop(path: &str) -> Result<()> {
     let project_path = PathBuf::from(path).canonicalize()
         .with_context(|| format!("Invalid path: {}", path))?;
 
     let config = EffectiveConfig::load(Some(&project_path))?;
-    let db = Database::open(&config.database_path)?;
+    let db = open_db(&config).await?;
 
-    tracker::stop_session(&db, &project_path, &config)
+    tracker::stop_session(&db, &project_path, &config).await
 }
 
-fn cmd_report(
+async fn cmd_report(
     month: Option<String>,
     project_filter: Option<String>,
     format: String,
@@ -86,7 +142,7 @@ fn cmd_report(
     all_formats: bool,
 ) -> Result<()> {
     let config = EffectiveConfig::load(None)?;
-    let db = Database::open(&config.database_path)?;
+    let db = open_db(&config).await?;
 
     // Parse month
     let (year, month_num) = if let Some(ref m) = month {
@@ -102,7 +158,7 @@ fn cmd_report(
         month_num,
         project_filter.as_deref(),
         config.max_commits_per_item,
-    )?;
+    ).await?;
 
     // Determine formats to output
     let formats: Vec<&str> = if all_formats {
@@ -153,11 +209,11 @@ fn cmd_report(
     Ok(())
 }
 
-fn cmd_status() -> Result<()> {
+async fn cmd_status() -> Result<()> {
     let config = EffectiveConfig::load(None)?;
-    let db = Database::open(&config.database_path)?;
+    let db = open_db(&config).await?;
 
-    let active_sessions = db.get_all_active_sessions()?;
+    let active_sessions = db.get_all_active_sessions().await?;
 
     if active_sessions.is_empty() {
         println!("No active tracking sessions.");
@@ -167,8 +223,8 @@ fn cmd_status() -> Result<()> {
     println!("Active tracking sessions:\n");
 
     for session in active_sessions {
-        let project = db.get_project_by_id(session.project_id)?;
-        let heartbeats = db.get_heartbeats(session.id)?;
+        let project = db.get_project_by_id(session.project_id).await?;
+        let heartbeats = db.get_heartbeats(session.id).await?;
 
         let elapsed = calculate_active_time_with_current(&heartbeats, config.idle_timeout_minutes);
 
@@ -243,9 +299,10 @@ fn cmd_config_show() -> Result<()> {
     Ok(())
 }
 
-fn cmd_projects_list() -> Result<()> {
-    let db = get_db()?;
-    let projects = db.list_projects()?;
+async fn cmd_projects_list() -> Result<()> {
+    let config = EffectiveConfig::load(None)?;
+    let db = open_db(&config).await?;
+    let projects = db.list_projects().await?;
 
     if projects.is_empty() {
         println!("No tracked projects yet.");
@@ -267,16 +324,222 @@ fn cmd_projects_list() -> Result<()> {
     Ok(())
 }
 
-fn cmd_projects_set_name(path: &str, name: &str) -> Result<()> {
-    let db = get_db()?;
+async fn cmd_projects_set_name(path: &str, name: &str) -> Result<()> {
+    let config = EffectiveConfig::load(None)?;
+    let db = open_db(&config).await?;
 
     let project_path = PathBuf::from(path).canonicalize()
         .with_context(|| format!("Invalid path: {}", path))?;
 
     let path_str = project_path.to_str().context("Invalid path")?;
 
-    db.get_or_create_project(path_str, None, Some(name), None)?;
+    db.get_or_create_project(path_str, None, Some(name), None).await?;
 
     println!("Set display name for {} to: {}", path_str, name);
     Ok(())
+}
+
+/// Sync local heartbeat cache to database
+/// Called periodically by statusline to ensure reliable time tracking
+/// Auto-creates sessions if heartbeats exist but no active session (statusline-first design)
+/// Auto-closes idle sessions based on transcript activity
+async fn cmd_sync(path: Option<String>) -> Result<()> {
+    use std::collections::HashMap;
+    use std::io::{BufRead, BufReader};
+
+    // Use ~/.cache/ (Linux-style) to match statusline-wrapper.sh
+    let home_dir = dirs::home_dir().context("Failed to get home directory")?;
+    let cache_dir = home_dir.join(".cache").join("claude-time-tracker");
+    let heartbeat_file = cache_dir.join("heartbeats.jsonl");
+
+    // Open database
+    let config = EffectiveConfig::load(None)?;
+    let db = open_db(&config).await?;
+
+    // === Phase 1: Check for idle sessions and close them ===
+    if let Some(ref path_str) = path {
+        let project_path = PathBuf::from(path_str).canonicalize()
+            .with_context(|| format!("Invalid path: {}", path_str))?;
+
+        // Check if this project is idle
+        if idle::is_project_idle(&project_path, config.idle_timeout_minutes) {
+            // Close any active session for this project
+            if let Some(project) = db.get_project_by_path(project_path.to_str().unwrap_or("")).await? {
+                if let Some(session) = db.get_active_session(project.id).await? {
+                    // Calculate active time and close
+                    let heartbeats = db.get_heartbeats(session.id).await?;
+                    let active_seconds = calculate_active_time_simple(&heartbeats, config.idle_timeout_minutes);
+
+                    // Collect commits if possible
+                    let git_info = git::get_git_info(&project_path).ok();
+                    let end_commit = git_info.as_ref().and_then(|g| g.head_commit.clone());
+
+                    if let Some(ref start) = session.start_commit {
+                        if let Ok(commits) = git::get_commits_between(&project_path, Some(start), end_commit.as_deref()) {
+                            if !commits.is_empty() {
+                                let _ = db.record_commits(session.id, &commits).await;
+                            }
+                        }
+                    }
+
+                    db.complete_session(
+                        session.id,
+                        end_commit.as_deref(),
+                        active_seconds,
+                        models::SessionStatus::Completed,
+                    ).await?;
+
+                    eprintln!(
+                        "Auto-closed idle session for: {} (active time: {})",
+                        project.display_name.as_deref().unwrap_or(&project.path),
+                        tracker::format_duration(active_seconds)
+                    );
+                }
+            }
+        }
+    }
+
+    // === Phase 2: Sync heartbeats from local cache ===
+
+    // Check if cache file exists
+    if !heartbeat_file.exists() {
+        return Ok(());
+    }
+
+    // Read and parse heartbeats
+    let file = fs::File::open(&heartbeat_file)
+        .with_context(|| format!("Failed to open heartbeat cache: {}", heartbeat_file.display()))?;
+    let reader = BufReader::new(file);
+
+    // Group heartbeats by project path
+    let mut heartbeats_by_project: HashMap<String, Vec<chrono::DateTime<Utc>>> = HashMap::new();
+
+    for line in reader.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        // Parse JSON: {"timestamp":"2026-01-24T00:12:34Z","project_path":"/path/to/project","unix_ts":1234567890}
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
+            if let (Some(timestamp_str), Some(project_path)) = (
+                json.get("timestamp").and_then(|v| v.as_str()),
+                json.get("project_path").and_then(|v| v.as_str()),
+            ) {
+                if let Ok(timestamp) = chrono::DateTime::parse_from_rfc3339(timestamp_str) {
+                    heartbeats_by_project
+                        .entry(project_path.to_string())
+                        .or_default()
+                        .push(timestamp.with_timezone(&Utc));
+                }
+            }
+        }
+    }
+
+    if heartbeats_by_project.is_empty() {
+        // No heartbeats to sync, clean up empty file
+        let _ = fs::remove_file(&heartbeat_file);
+        return Ok(());
+    }
+
+    let mut synced_count = 0;
+
+    for (project_path, mut timestamps) in heartbeats_by_project {
+        // Sort timestamps chronologically
+        timestamps.sort();
+
+        // Get git info for session creation
+        let project_path_buf = PathBuf::from(&project_path);
+        let git_info = git::get_git_info(&project_path_buf).ok();
+
+        // Load project-specific config for work_item_pattern
+        let project_config = EffectiveConfig::load(Some(&project_path_buf)).unwrap_or(config.clone());
+
+        // Get or create project
+        let project = db.get_or_create_project(
+            &project_path,
+            git_info.as_ref().and_then(|g| g.remote_url.as_deref()),
+            project_config.project_name.as_deref(),
+            project_config.work_item_pattern.as_deref(),
+        ).await?;
+
+        // Get or create active session for this project
+        let session = match db.get_active_session(project.id).await? {
+            Some(s) => s,
+            None => {
+                // Auto-create session (statusline-first design)
+                let branch = git_info
+                    .as_ref()
+                    .map(|g| g.branch.clone())
+                    .unwrap_or_else(|| "unknown".to_string());
+
+                let start_commit = git_info.as_ref().and_then(|g| g.head_commit.clone());
+
+                // Extract work item from branch name
+                let work_item = project_config.work_item_pattern.as_ref().and_then(|pattern| {
+                    regex::Regex::new(pattern).ok().and_then(|re| {
+                        re.captures(&branch).and_then(|caps| {
+                            caps.get(1).or_else(|| caps.get(0)).map(|m| m.as_str().to_string())
+                        })
+                    })
+                });
+
+                // Use earliest heartbeat timestamp as session start time
+                let earliest_ts = timestamps.first().copied();
+
+                let session = db.create_session_at(
+                    project.id,
+                    &branch,
+                    work_item.as_deref(),
+                    start_commit.as_deref(),
+                    earliest_ts,
+                ).await?;
+
+                eprintln!(
+                    "Auto-created session for: {} (branch: {}{})",
+                    project.display_name.as_deref().unwrap_or(&project_path),
+                    branch,
+                    work_item.map(|w| format!(", work_item: {}", w)).unwrap_or_default()
+                );
+
+                session
+            }
+        };
+
+        // Record each heartbeat timestamp
+        for timestamp in timestamps {
+            db.record_heartbeat_at(session.id, timestamp).await?;
+            synced_count += 1;
+        }
+    }
+
+    // Clear the cache file after successful sync
+    fs::remove_file(&heartbeat_file)
+        .with_context(|| "Failed to remove heartbeat cache after sync")?;
+
+    if synced_count > 0 {
+        eprintln!("Synced {} heartbeats to database", synced_count);
+    }
+
+    Ok(())
+}
+
+/// Simple active time calculation for sync command
+fn calculate_active_time_simple(heartbeats: &[models::Heartbeat], idle_timeout_minutes: u32) -> i64 {
+    if heartbeats.is_empty() {
+        return 0;
+    }
+
+    let timeout_seconds = (idle_timeout_minutes as i64) * 60;
+    let mut total_seconds: i64 = 0;
+
+    for window in heartbeats.windows(2) {
+        let interval = (window[1].timestamp - window[0].timestamp).num_seconds();
+
+        if interval <= timeout_seconds {
+            total_seconds += interval;
+        }
+    }
+
+    total_seconds
 }
