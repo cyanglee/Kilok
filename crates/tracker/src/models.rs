@@ -9,6 +9,8 @@ pub struct Project {
     pub git_remote: Option<String>,
     pub display_name: Option<String>,
     pub work_item_pattern: Option<String>,
+    pub work_item_source: Option<WorkItemSource>,
+    pub client_id: Option<i64>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -54,6 +56,37 @@ impl SessionStatus {
     }
 }
 
+/// Source of work items (issue tracking system)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkItemSource {
+    Trello,
+    Linear,
+    Github,
+    Jira,
+}
+
+impl WorkItemSource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            WorkItemSource::Trello => "trello",
+            WorkItemSource::Linear => "linear",
+            WorkItemSource::Github => "github",
+            WorkItemSource::Jira => "jira",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "trello" => Some(WorkItemSource::Trello),
+            "linear" => Some(WorkItemSource::Linear),
+            "github" => Some(WorkItemSource::Github),
+            "jira" => Some(WorkItemSource::Jira),
+            _ => None,
+        }
+    }
+}
+
 /// A heartbeat timestamp within a session
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Heartbeat {
@@ -72,6 +105,29 @@ pub struct Commit {
     pub committed_at: Option<DateTime<Utc>>,
 }
 
+/// A work item that groups multiple sessions
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkItem {
+    pub id: i64,
+    pub project_id: i64,
+    pub identifier: String,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub time_adjustment_seconds: i64,
+    pub completed_date: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+/// Work item with computed total time and related data
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkItemDetail {
+    pub work_item: WorkItem,
+    pub total_seconds: i64,          // computed from sessions + adjustment
+    pub sessions: Vec<Session>,
+    pub commits: Vec<Commit>,
+}
+
 /// Report data structures
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectReport {
@@ -84,6 +140,8 @@ pub struct ProjectReport {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkItemReport {
     pub id: String,
+    pub title: Option<String>,
+    pub description: Option<String>,
     pub branch: Option<String>,
     pub total_seconds: i64,
     pub completed_date: Option<String>,

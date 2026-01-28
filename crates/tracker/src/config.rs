@@ -2,6 +2,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+use crate::models::WorkItemSource;
+
 /// Global configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlobalConfig {
@@ -26,6 +28,21 @@ pub struct Settings {
     pub idle_timeout_minutes: u32,
     #[serde(default = "default_database_path")]
     pub database_path: String,
+    #[serde(default)]
+    pub turso: Option<TursoSettings>,
+}
+
+/// Turso remote database settings for embedded replica sync
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TursoSettings {
+    /// Turso database URL (e.g., "libsql://your-db.turso.io")
+    pub url: String,
+    /// Auth token for Turso (can also be set via TURSO_AUTH_TOKEN env var)
+    pub auth_token: Option<String>,
+    /// Use pure remote mode (no local cache). Safer for concurrent access.
+    /// Default: false (uses embedded replica with local cache)
+    #[serde(default)]
+    pub remote_only: bool,
 }
 
 impl Default for Settings {
@@ -33,6 +50,7 @@ impl Default for Settings {
         Self {
             idle_timeout_minutes: default_idle_timeout(),
             database_path: default_database_path(),
+            turso: None,
         }
     }
 }
@@ -77,11 +95,16 @@ fn default_max_commits() -> usize {
     10
 }
 
+/// Default work item pattern supporting Conventional Commits
+/// Extracts numeric ID from branches like: feat/123-description, fix/456-bug
+pub const DEFAULT_WORK_ITEM_PATTERN: &str = r"^(?:feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)/(\d+)";
+
 /// Project-specific configuration (found in project directory)
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProjectConfig {
     pub name: Option<String>,
     pub work_item_pattern: Option<String>,
+    pub work_item_source: Option<WorkItemSource>,
     #[serde(default)]
     pub report: ProjectReportSettings,
 }
@@ -97,8 +120,12 @@ pub struct ProjectReportSettings {
 pub struct EffectiveConfig {
     pub idle_timeout_minutes: u32,
     pub database_path: PathBuf,
+    pub turso_url: Option<String>,
+    pub turso_auth_token: Option<String>,
+    pub turso_remote_only: bool,
     pub project_name: Option<String>,
-    pub work_item_pattern: Option<String>,
+    pub work_item_pattern: String,
+    pub work_item_source: Option<WorkItemSource>,
     pub include_commits: bool,
     pub max_commits_per_item: usize,
 }
@@ -111,11 +138,27 @@ impl EffectiveConfig {
 
         let database_path = expand_path(&global.settings.database_path)?;
 
+        // Get Turso settings from config or environment
+        let (turso_url, turso_auth_token, turso_remote_only) = if let Some(ref turso) = global.settings.turso {
+            let token = turso.auth_token.clone()
+                .or_else(|| std::env::var("TURSO_AUTH_TOKEN").ok());
+            (Some(turso.url.clone()), token, turso.remote_only)
+        } else {
+            (None, None, false)
+        };
+
         Ok(Self {
             idle_timeout_minutes: global.settings.idle_timeout_minutes,
             database_path,
+            turso_url,
+            turso_auth_token,
+            turso_remote_only,
             project_name: project.as_ref().and_then(|p| p.name.clone()),
-            work_item_pattern: project.as_ref().and_then(|p| p.work_item_pattern.clone()),
+            work_item_pattern: project
+                .as_ref()
+                .and_then(|p| p.work_item_pattern.clone())
+                .unwrap_or_else(|| DEFAULT_WORK_ITEM_PATTERN.to_string()),
+            work_item_source: project.as_ref().and_then(|p| p.work_item_source),
             include_commits: project
                 .as_ref()
                 .and_then(|p| p.report.include_commits)
@@ -125,6 +168,11 @@ impl EffectiveConfig {
                 .and_then(|p| p.report.max_commits_per_item)
                 .unwrap_or(global.report.max_commits_per_item),
         })
+    }
+
+    /// Check if Turso remote sync is enabled
+    pub fn is_turso_enabled(&self) -> bool {
+        self.turso_url.is_some() && self.turso_auth_token.is_some()
     }
 }
 

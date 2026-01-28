@@ -9,9 +9,9 @@ pub fn generate<W: Write>(report: &MonthlyReport, writer: W, include_commits: bo
 
     // Write header
     if include_commits {
-        wtr.write_record(["project", "work_item", "completed_date", "hours", "minutes", "total_seconds", "commits"])?;
+        wtr.write_record(["project", "work_item", "title", "completed_date", "hours", "minutes", "total_seconds", "commits"])?;
     } else {
-        wtr.write_record(["project", "work_item", "completed_date", "hours", "minutes", "total_seconds"])?;
+        wtr.write_record(["project", "work_item", "title", "completed_date", "hours", "minutes", "total_seconds"])?;
     }
 
     // Write data rows
@@ -20,6 +20,7 @@ pub fn generate<W: Write>(report: &MonthlyReport, writer: W, include_commits: bo
             let hours = item.total_seconds / 3600;
             let minutes = (item.total_seconds % 3600) / 60;
             let date_str = item.completed_date.as_deref().unwrap_or("");
+            let title = item.title.as_deref().unwrap_or("");
 
             if include_commits {
                 let commits_str = item
@@ -32,6 +33,7 @@ pub fn generate<W: Write>(report: &MonthlyReport, writer: W, include_commits: bo
                 wtr.write_record([
                     &project.name,
                     &item.id,
+                    title,
                     date_str,
                     &hours.to_string(),
                     &minutes.to_string(),
@@ -42,6 +44,7 @@ pub fn generate<W: Write>(report: &MonthlyReport, writer: W, include_commits: bo
                 wtr.write_record([
                     &project.name,
                     &item.id,
+                    title,
                     date_str,
                     &hours.to_string(),
                     &minutes.to_string(),
@@ -78,6 +81,8 @@ mod tests {
                 total_seconds: 7200,
                 work_items: vec![WorkItemReport {
                     id: "ABC-123".to_string(),
+                    title: Some("實作登入功能".to_string()),
+                    description: Some("新增使用者認證流程".to_string()),
                     branch: Some("feature/ABC-123-test".to_string()),
                     total_seconds: 7200,
                     completed_date: Some("2025-01-15".to_string()),
@@ -90,9 +95,10 @@ mod tests {
         };
 
         let csv = generate_string(&report, true).unwrap();
-        assert!(csv.contains("project,work_item,completed_date,hours,minutes,total_seconds,commits"));
+        assert!(csv.contains("project,work_item,title,completed_date,hours,minutes,total_seconds,commits"));
         assert!(csv.contains("Test Project"));
         assert!(csv.contains("ABC-123"));
+        assert!(csv.contains("實作登入功能"));
         assert!(csv.contains("2025-01-15"));
         assert!(csv.contains("2,0,7200")); // 2 hours, 0 minutes, 7200 seconds
     }

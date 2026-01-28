@@ -11,7 +11,7 @@ use crate::db::Database;
 use crate::models::{CommitSummary, MonthlyReport, ProjectReport, WorkItemReport};
 
 /// Generate report data for a given month
-pub fn generate_report(
+pub async fn generate_report(
     db: &Database,
     year: i32,
     month: u32,
@@ -33,7 +33,7 @@ pub fn generate_report(
     .context("Invalid end date")?;
 
     // Get all projects
-    let projects = db.list_projects()?;
+    let projects = db.list_projects().await?;
 
     let mut project_reports = Vec::new();
     let mut total_seconds: i64 = 0;
@@ -49,15 +49,15 @@ pub fn generate_report(
             }
         }
 
-        let sessions = db.get_sessions_in_range(start, end, Some(project.id))?;
+        let sessions = db.get_sessions_in_range(start, end, Some(project.id)).await?;
 
         if sessions.is_empty() {
             continue;
         }
 
         // Group sessions by work item
-        // (total_seconds, commits, branch, completed_date)
-        let mut work_items: HashMap<String, (i64, Vec<CommitSummary>, Option<String>, Option<DateTime<Utc>>)> = HashMap::new();
+        // (total_seconds, commits, branch, completed_date, title, description)
+        let mut work_items: HashMap<String, (i64, Vec<CommitSummary>, Option<String>, Option<DateTime<Utc>>, Option<String>, Option<String>)> = HashMap::new();
 
         for session in &sessions {
             let work_item_id = session
@@ -66,8 +66,8 @@ pub fn generate_report(
                 .unwrap_or_else(|| session.branch.clone());
 
             let entry = work_items
-                .entry(work_item_id)
-                .or_insert_with(|| (0, Vec::new(), Some(session.branch.clone()), None));
+                .entry(work_item_id.clone())
+                .or_insert_with(|| (0, Vec::new(), Some(session.branch.clone()), None, None, None));
 
             entry.0 += session.active_seconds.unwrap_or(0);
 
@@ -78,8 +78,16 @@ pub fn generate_report(
                 }
             }
 
+            // Try to get title/description from work_items table if not already set
+            if entry.4.is_none() {
+                if let Ok(Some(work_item)) = db.get_work_item_by_identifier(project.id, &work_item_id).await {
+                    entry.4 = work_item.title;
+                    entry.5 = work_item.description;
+                }
+            }
+
             // Get commits for this session
-            if let Ok(commits) = db.get_commits(session.id) {
+            if let Ok(commits) = db.get_commits(session.id).await {
                 for commit in commits {
                     if entry.1.len() < max_commits_per_item {
                         entry.1.push(CommitSummary {
@@ -91,7 +99,7 @@ pub fn generate_report(
             }
         }
 
-        let project_total: i64 = work_items.values().map(|(s, _, _, _)| s).sum();
+        let project_total: i64 = work_items.values().map(|(s, _, _, _, _, _)| s).sum();
 
         if project_total == 0 {
             continue;
@@ -101,8 +109,10 @@ pub fn generate_report(
 
         let mut work_item_reports: Vec<WorkItemReport> = work_items
             .into_iter()
-            .map(|(id, (seconds, commits, branch, completed))| WorkItemReport {
+            .map(|(id, (seconds, commits, branch, completed, title, description))| WorkItemReport {
                 id,
+                title,
+                description,
                 branch,
                 total_seconds: seconds,
                 completed_date: completed.map(|dt| dt.format("%Y-%m-%d").to_string()),

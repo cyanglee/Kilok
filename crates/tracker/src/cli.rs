@@ -57,6 +57,14 @@ pub enum Commands {
     /// Show current tracking status
     Status,
 
+    /// Get active time for current session (for statusline integration)
+    /// Outputs seconds only, or empty if no active session
+    ActiveTime {
+        /// Project path
+        #[arg(short, long)]
+        path: String,
+    },
+
     /// Sync local heartbeat cache to database (called by statusline)
     /// Also auto-closes idle sessions based on transcript activity
     Sync {

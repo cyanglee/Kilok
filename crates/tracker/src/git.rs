@@ -135,23 +135,3 @@ pub fn get_commits_between(
     commits.reverse();
     Ok(commits)
 }
-
-/// Check if path is inside a git repository
-pub fn is_git_repo(path: &Path) -> bool {
-    gix::open(path).is_ok()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::env;
-
-    #[test]
-    fn test_is_git_repo() {
-        // Current directory should be a git repo (this project)
-        let cwd = env::current_dir().unwrap();
-        // This test depends on being run from within a git repo
-        // Just verify the function doesn't panic
-        let _ = is_git_repo(&cwd);
-    }
-}

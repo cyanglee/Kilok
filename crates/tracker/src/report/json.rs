@@ -24,6 +24,8 @@ mod tests {
                 total_seconds: 7200,
                 work_items: vec![WorkItemReport {
                     id: "ABC-123".to_string(),
+                    title: Some("實作登入功能".to_string()),
+                    description: Some("新增使用者認證流程".to_string()),
                     branch: Some("feature/ABC-123-test".to_string()),
                     total_seconds: 7200,
                     completed_date: Some("2025-01-15".to_string()),
@@ -39,5 +41,6 @@ mod tests {
         assert!(json.contains("\"period\": \"2025-01\""));
         assert!(json.contains("\"total_seconds\": 7200"));
         assert!(json.contains("\"name\": \"Test Project\""));
+        assert!(json.contains("\"title\": \"實作登入功能\""));
     }
 }

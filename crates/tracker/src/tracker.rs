@@ -9,7 +9,7 @@ use crate::git;
 use crate::models::SessionStatus;
 
 /// Start a new tracking session
-pub fn start_session(db: &Database, project_path: &Path, config: &EffectiveConfig) -> Result<()> {
+pub async fn start_session(db: &Database, project_path: &Path, config: &EffectiveConfig) -> Result<()> {
     let path_str = project_path
         .to_str()
         .context("Invalid project path")?;
@@ -18,18 +18,19 @@ pub fn start_session(db: &Database, project_path: &Path, config: &EffectiveConfi
     let git_info = git::get_git_info(project_path).ok();
 
     // Check for abandoned sessions and close them
-    close_abandoned_sessions(db, config)?;
+    close_abandoned_sessions(db, config).await?;
 
     // Get or create project
     let project = db.get_or_create_project(
         path_str,
         git_info.as_ref().and_then(|g| g.remote_url.as_deref()),
         config.project_name.as_deref(),
-        config.work_item_pattern.as_deref(),
-    )?;
+        Some(&config.work_item_pattern),
+        config.work_item_source.map(|s| s.as_str()),
+    ).await?;
 
     // Check if there's already an active session for this project
-    if let Some(existing) = db.get_active_session(project.id)? {
+    if let Some(existing) = db.get_active_session(project.id).await? {
         eprintln!(
             "Session already active for project (started at {})",
             existing.started_at
@@ -43,7 +44,7 @@ pub fn start_session(db: &Database, project_path: &Path, config: &EffectiveConfi
         .map(|g| g.branch.clone())
         .unwrap_or_else(|| "unknown".to_string());
 
-    let work_item = extract_work_item(&branch, config.work_item_pattern.as_deref());
+    let work_item = extract_work_item(&branch, Some(&config.work_item_pattern));
 
     // Create new session
     let session = db.create_session(
@@ -51,10 +52,10 @@ pub fn start_session(db: &Database, project_path: &Path, config: &EffectiveConfi
         &branch,
         work_item.as_deref(),
         git_info.as_ref().and_then(|g| g.head_commit.as_deref()),
-    )?;
+    ).await?;
 
     // Record initial heartbeat
-    db.record_heartbeat(session.id)?;
+    db.record_heartbeat(session.id).await?;
 
     eprintln!(
         "Started tracking: {} (branch: {}, work_item: {})",
@@ -68,39 +69,39 @@ pub fn start_session(db: &Database, project_path: &Path, config: &EffectiveConfi
 
 /// Record a heartbeat for the current session
 /// If no active session exists, silently succeeds (session will be created on next start)
-pub fn record_heartbeat(db: &Database, project_path: &Path) -> Result<()> {
+pub async fn record_heartbeat(db: &Database, project_path: &Path) -> Result<()> {
     let path_str = project_path
         .to_str()
         .context("Invalid project path")?;
 
     // If project doesn't exist, just return Ok (no session to track)
-    let project = match db.get_project_by_path(path_str)? {
+    let project = match db.get_project_by_path(path_str).await? {
         Some(p) => p,
         None => return Ok(()),
     };
 
     // If no active session, just return Ok (session might have been stopped)
-    let session = match db.get_active_session(project.id)? {
+    let session = match db.get_active_session(project.id).await? {
         Some(s) => s,
         None => return Ok(()),
     };
 
-    db.record_heartbeat(session.id)?;
+    db.record_heartbeat(session.id).await?;
 
     Ok(())
 }
 
 /// Stop the current tracking session
-pub fn stop_session(db: &Database, project_path: &Path, config: &EffectiveConfig) -> Result<()> {
+pub async fn stop_session(db: &Database, project_path: &Path, config: &EffectiveConfig) -> Result<()> {
     let path_str = project_path
         .to_str()
         .context("Invalid project path")?;
 
     let project = db
-        .get_project_by_path(path_str)?
+        .get_project_by_path(path_str).await?
         .context("Project not found")?;
 
-    let session = match db.get_active_session(project.id)? {
+    let session = match db.get_active_session(project.id).await? {
         Some(s) => s,
         None => {
             eprintln!("No active session to stop");
@@ -113,18 +114,27 @@ pub fn stop_session(db: &Database, project_path: &Path, config: &EffectiveConfig
     let end_commit = git_info.as_ref().and_then(|g| g.head_commit.clone());
 
     // Calculate active time from heartbeats
-    let heartbeats = db.get_heartbeats(session.id)?;
+    let heartbeats = db.get_heartbeats(session.id).await?;
     let active_seconds = calculate_active_time(&heartbeats, config.idle_timeout_minutes);
 
     // Collect commits made during this session
     if let Some(ref start) = session.start_commit {
-        if let Ok(commits) = git::get_commits_between(
+        match git::get_commits_between(
             project_path,
             Some(start),
             end_commit.as_deref(),
         ) {
-            if !commits.is_empty() {
-                db.record_commits(session.id, &commits)?;
+            Ok(commits) => {
+                if !commits.is_empty() {
+                    db.record_commits(session.id, &commits).await?;
+                    eprintln!("Recorded {} commits for session", commits.len());
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "Warning: Failed to collect commits for session {}: {}",
+                    session.id, e
+                );
             }
         }
     }
@@ -135,7 +145,7 @@ pub fn stop_session(db: &Database, project_path: &Path, config: &EffectiveConfig
         end_commit.as_deref(),
         active_seconds,
         SessionStatus::Completed,
-    )?;
+    ).await?;
 
     let duration = format_duration(active_seconds);
     eprintln!(
@@ -148,11 +158,11 @@ pub fn stop_session(db: &Database, project_path: &Path, config: &EffectiveConfig
 }
 
 /// Close any abandoned sessions (from previous runs that didn't properly stop)
-fn close_abandoned_sessions(db: &Database, config: &EffectiveConfig) -> Result<()> {
-    let active_sessions = db.get_all_active_sessions()?;
+async fn close_abandoned_sessions(db: &Database, config: &EffectiveConfig) -> Result<()> {
+    let active_sessions = db.get_all_active_sessions().await?;
 
     for session in active_sessions {
-        let heartbeats = db.get_heartbeats(session.id)?;
+        let heartbeats = db.get_heartbeats(session.id).await?;
 
         if let Some(last_heartbeat) = heartbeats.last() {
             let timeout = Duration::minutes(config.idle_timeout_minutes as i64);
@@ -162,7 +172,7 @@ fn close_abandoned_sessions(db: &Database, config: &EffectiveConfig) -> Result<(
                 // Session is abandoned - close it
                 let active_seconds = calculate_active_time(&heartbeats, config.idle_timeout_minutes);
 
-                db.complete_session(session.id, None, active_seconds, SessionStatus::Abandoned)?;
+                db.complete_session(session.id, None, active_seconds, SessionStatus::Abandoned).await?;
 
                 eprintln!(
                     "Closed abandoned session {} (was active for {})",

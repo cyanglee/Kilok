@@ -8,9 +8,9 @@ pub fn generate_string(report: &MonthlyReport, include_commits: bool) -> Result<
 
     // Write header
     if include_commits {
-        output.push_str("project\twork_item\tcompleted_date\thours\tminutes\ttotal_seconds\tcommits\n");
+        output.push_str("project\twork_item\ttitle\tcompleted_date\thours\tminutes\ttotal_seconds\tcommits\n");
     } else {
-        output.push_str("project\twork_item\tcompleted_date\thours\tminutes\ttotal_seconds\n");
+        output.push_str("project\twork_item\ttitle\tcompleted_date\thours\tminutes\ttotal_seconds\n");
     }
 
     // Write data rows
@@ -23,6 +23,7 @@ pub fn generate_string(report: &MonthlyReport, include_commits: bool) -> Result<
             // Escape tabs and newlines in text fields
             let project_name = escape_tsv(&project.name);
             let work_item = escape_tsv(&item.id);
+            let title = escape_tsv(item.title.as_deref().unwrap_or(""));
 
             if include_commits {
                 let commits_str = item
@@ -34,9 +35,10 @@ pub fn generate_string(report: &MonthlyReport, include_commits: bool) -> Result<
                 let commits_escaped = escape_tsv(&commits_str);
 
                 output.push_str(&format!(
-                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
                     project_name,
                     work_item,
+                    title,
                     date_str,
                     hours,
                     minutes,
@@ -45,9 +47,10 @@ pub fn generate_string(report: &MonthlyReport, include_commits: bool) -> Result<
                 ));
             } else {
                 output.push_str(&format!(
-                    "{}\t{}\t{}\t{}\t{}\t{}\n",
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
                     project_name,
                     work_item,
+                    title,
                     date_str,
                     hours,
                     minutes,
@@ -81,6 +84,8 @@ mod tests {
                 total_seconds: 7200,
                 work_items: vec![WorkItemReport {
                     id: "ABC-123".to_string(),
+                    title: Some("實作登入功能".to_string()),
+                    description: Some("新增使用者認證流程".to_string()),
                     branch: Some("feature/ABC-123-test".to_string()),
                     total_seconds: 7200,
                     completed_date: Some("2025-01-15".to_string()),
@@ -93,9 +98,10 @@ mod tests {
         };
 
         let tsv = generate_string(&report, true).unwrap();
-        assert!(tsv.contains("project\twork_item\tcompleted_date"));
+        assert!(tsv.contains("project\twork_item\ttitle\tcompleted_date"));
         assert!(tsv.contains("Test Project"));
         assert!(tsv.contains("ABC-123"));
+        assert!(tsv.contains("實作登入功能"));
         assert!(tsv.contains("2025-01-15"));
         assert!(tsv.contains("\t2\t0\t7200\t")); // hours, minutes, seconds
     }

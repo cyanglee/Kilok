@@ -33,6 +33,7 @@ async fn main() -> Result<()> {
             all_formats,
         } => cmd_report(month, project, format, output, all_formats).await,
         Commands::Status => cmd_status().await,
+        Commands::ActiveTime { path } => cmd_active_time(&path).await,
         Commands::Sync { path } => cmd_sync(path).await,
         Commands::Config { action } => match action {
             ConfigAction::Init => cmd_config_init(),
@@ -269,6 +270,39 @@ fn calculate_active_time_with_current(heartbeats: &[models::Heartbeat], idle_tim
     total_seconds
 }
 
+/// Get active time for current session (for statusline integration)
+/// Outputs only the seconds number, or nothing if no active session
+async fn cmd_active_time(path: &str) -> Result<()> {
+    let project_path = PathBuf::from(path).canonicalize()
+        .unwrap_or_else(|_| PathBuf::from(path));
+
+    let config = EffectiveConfig::load(Some(&project_path))?;
+    let db = open_db(&config).await?;
+
+    let path_str = project_path.to_str().context("Invalid project path")?;
+
+    // Find project
+    let project = match db.get_project_by_path(path_str).await? {
+        Some(p) => p,
+        None => return Ok(()), // No output if no project
+    };
+
+    // Find active session
+    let session = match db.get_active_session(project.id).await? {
+        Some(s) => s,
+        None => return Ok(()), // No output if no active session
+    };
+
+    // Get heartbeats and calculate active time
+    let heartbeats = db.get_heartbeats(session.id).await?;
+    let active_seconds = calculate_active_time_with_current(&heartbeats, config.idle_timeout_minutes);
+
+    // Output only the number (for easy parsing by statusline)
+    println!("{}", active_seconds);
+
+    Ok(())
+}
+
 fn cmd_config_init() -> Result<()> {
     let path = config::init_global_config()?;
     println!("Configuration initialized at: {}", path.display());
@@ -333,7 +367,7 @@ async fn cmd_projects_set_name(path: &str, name: &str) -> Result<()> {
 
     let path_str = project_path.to_str().context("Invalid path")?;
 
-    db.get_or_create_project(path_str, None, Some(name), None).await?;
+    db.get_or_create_project(path_str, None, Some(name), None, None).await?;
 
     println!("Set display name for {} to: {}", path_str, name);
     Ok(())
@@ -460,7 +494,8 @@ async fn cmd_sync(path: Option<String>) -> Result<()> {
             &project_path,
             git_info.as_ref().and_then(|g| g.remote_url.as_deref()),
             project_config.project_name.as_deref(),
-            project_config.work_item_pattern.as_deref(),
+            Some(&project_config.work_item_pattern),
+            project_config.work_item_source.map(|s| s.as_str()),
         ).await?;
 
         // Get or create active session for this project
@@ -476,13 +511,13 @@ async fn cmd_sync(path: Option<String>) -> Result<()> {
                 let start_commit = git_info.as_ref().and_then(|g| g.head_commit.clone());
 
                 // Extract work item from branch name
-                let work_item = project_config.work_item_pattern.as_ref().and_then(|pattern| {
-                    regex::Regex::new(pattern).ok().and_then(|re| {
+                let work_item = regex::Regex::new(&project_config.work_item_pattern)
+                    .ok()
+                    .and_then(|re| {
                         re.captures(&branch).and_then(|caps| {
                             caps.get(1).or_else(|| caps.get(0)).map(|m| m.as_str().to_string())
                         })
-                    })
-                });
+                    });
 
                 // Use earliest heartbeat timestamp as session start time
                 let earliest_ts = timestamps.first().copied();

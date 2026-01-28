@@ -1,0 +1,57 @@
+[package]
+name = "claude-time-tracker"
+version = "0.1.0"
+edition = "2021"
+description = "Track Claude Code usage time per project and generate monthly reports"
+authors = ["take5"]
+license = "MIT"
+
+[dependencies]
+# CLI framework
+clap = { version = "4", features = ["derive"] }
+
+# Database (libSQL for Turso embedded replica support)
+libsql = "0.9"
+
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Date/Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Git operations (pure Rust implementation, no libgit2 dependency)
+gix = { version = "0.66", default-features = false, features = ["basic", "blocking-network-client"] }
+
+# Path expansion
+shellexpand = "3"
+dirs = "5"
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# Regex for work item parsing
+regex = "1"
+
+# CSV output
+csv = "1"
+
+# MCP Server
+rmcp = { version = "0.14", features = ["server", "transport-io"] }
+schemars = "1.0"
+
+[dev-dependencies]
+tempfile = "3"
+
+[[bin]]
+name = "claude-time-tracker"
+path = "src/main.rs"
+
+[[bin]]
+name = "claude-time-tracker-mcp"
+path = "src/mcp/main.rs"

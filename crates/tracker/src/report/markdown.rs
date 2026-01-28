@@ -38,6 +38,8 @@ pub fn generate(report: &MonthlyReport, include_commits: bool) -> String {
         for item in &project.work_items {
             let time_str = format_duration(item.total_seconds);
             let date_str = item.completed_date.as_deref().unwrap_or("-");
+            // Use title if available, fallback to id
+            let display_name = item.title.as_deref().unwrap_or(&item.id);
 
             if include_commits {
                 let commits_str = if item.commits.is_empty() {
@@ -50,9 +52,9 @@ pub fn generate(report: &MonthlyReport, include_commits: bool) -> String {
                         .join("、")
                 };
 
-                output.push_str(&format!("| {} | {} | {} | {} |\n", item.id, date_str, time_str, commits_str));
+                output.push_str(&format!("| {} | {} | {} | {} |\n", display_name, date_str, time_str, commits_str));
             } else {
-                output.push_str(&format!("| {} | {} | {} |\n", item.id, date_str, time_str));
+                output.push_str(&format!("| {} | {} | {} |\n", display_name, date_str, time_str));
             }
         }
 
@@ -89,6 +91,8 @@ mod tests {
                 total_seconds: 7200,
                 work_items: vec![WorkItemReport {
                     id: "ABC-123".to_string(),
+                    title: Some("實作登入功能".to_string()),
+                    description: Some("新增使用者認證流程".to_string()),
                     branch: Some("feature/ABC-123-test".to_string()),
                     total_seconds: 7200,
                     completed_date: Some("2025-01-15".to_string()),
@@ -104,6 +108,7 @@ mod tests {
         assert!(md.contains("Claude Code 工作時間報告"));
         assert!(md.contains("2025 年 1 月"));
         assert!(md.contains("Test Project"));
-        assert!(md.contains("ABC-123"));
+        // Should display title instead of id when title is present
+        assert!(md.contains("實作登入功能"));
     }
 }
