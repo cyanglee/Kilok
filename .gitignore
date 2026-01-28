@@ -1,1 +1,37 @@
+# Rust
 /target
+
+# Web (SvelteKit)
+apps/web/node_modules
+apps/web/.svelte-kit
+apps/web/build
+
+# Environment
+.env
+.env.local
+*.local
+
+# IDE
+.idea
+.vscode
+*.swp
+
+# OS
+.DS_Store
+
+# Claude-mem auto-generated files (每個子目錄都有)
+**/CLAUDE.md
+!/CLAUDE.md
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# Ruby (claude-mem 依賴)
+.ruby-lsp/
+**/vendor/bundle/
+**/.bundle/
+
+# Local database files
+*.db
+*.db-shm
+*.db-wal
