@@ -1,0 +1,70 @@
+/* Google Fonts - must be first */
+/* English fonts + Noto Sans TC for Chinese */
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+TC:wght@400;500;700&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+
+@import 'tailwindcss';
+
+/* Theme tokens */
+@theme {
+	/* Font stacks with Chinese fallback */
+	--font-heading: 'Space Grotesk', 'Noto Sans TC', sans-serif;
+	--font-body: 'DM Sans', 'Noto Sans TC', sans-serif;
+	--font-mono: 'JetBrains Mono', monospace;
+
+	--color-primary: #2563eb;
+	--color-primary-hover: #1d4ed8;
+	--color-secondary: #3b82f6;
+	--color-cta: #f97316;
+	--color-cta-hover: #ea580c;
+	--color-background: #f8fafc;
+	--color-surface: #ffffff;
+	--color-text: #1e293b;
+	--color-text-muted: #64748b;
+	--color-border: #e2e8f0;
+	--color-success: #22c55e;
+	--color-warning: #eab308;
+	--color-danger: #ef4444;
+
+	/* shadcn-svelte CSS variables */
+	--color-primary-foreground: #ffffff;
+	--color-secondary-foreground: #ffffff;
+	--color-destructive: #ef4444;
+	--color-destructive-foreground: #ffffff;
+	--color-muted: #f1f5f9;
+	--color-muted-foreground: #64748b;
+	--color-accent: #f1f5f9;
+	--color-accent-foreground: #1e293b;
+	--color-popover: #ffffff;
+	--color-popover-foreground: #1e293b;
+	--color-card: #ffffff;
+	--color-card-foreground: #1e293b;
+	--color-input: #e2e8f0;
+	--color-ring: #2563eb;
+
+	--radius-sm: 0.25rem;
+	--radius-md: 0.375rem;
+	--radius-lg: 0.5rem;
+	--radius-xl: 0.75rem;
+}
+
+/* Base styles */
+body {
+	font-family: var(--font-body);
+	background-color: var(--color-background);
+	color: var(--color-text);
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+	font-family: var(--font-heading);
+}
+
+code,
+pre,
+.font-mono {
+	font-family: var(--font-mono);
+}

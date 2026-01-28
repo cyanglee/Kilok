@@ -1,0 +1,203 @@
+import {
+	getClientBySlug,
+	getProjectsByClientId,
+	getSessionsInMonth,
+	getCommitsBySessionIds,
+	getWorkItemsByProjectIds,
+	updateWorkItem,
+	db
+} from '$lib/server/db';
+import { error, fail } from '@sveltejs/kit';
+import type { PageServerLoad, Actions } from './$types';
+import type { Session, Commit, Project, WorkItem } from '$lib/server/db';
+
+interface SessionWithDetails extends Session {
+	project: Project;
+	commits: Commit[];
+	/** True if start_commit != end_commit but no commits recorded (likely a bug) */
+	maybeMissingCommits: boolean;
+}
+
+export const load: PageServerLoad = async ({ params }) => {
+	const client = await getClientBySlug(params.clientSlug);
+	if (!client) {
+		throw error(404, 'Client not found');
+	}
+
+	// Parse period (YYYY-MM)
+	const periodMatch = params.period.match(/^(\d{4})-(\d{2})$/);
+	if (!periodMatch) {
+		throw error(400, 'Invalid period format. Expected YYYY-MM');
+	}
+
+	const year = parseInt(periodMatch[1], 10);
+	const month = parseInt(periodMatch[2], 10);
+
+	if (month < 1 || month > 12) {
+		throw error(400, 'Invalid month');
+	}
+
+	const projects = await getProjectsByClientId(client.id);
+	const projectIds = projects.map((p) => p.id);
+	const projectMap = new Map(projects.map((p) => [p.id, p]));
+
+	// Get work items for all projects
+	const workItems = await getWorkItemsByProjectIds(projectIds);
+	// Create a map keyed by "projectId:identifier" for quick lookup
+	const workItemMap = new Map<string, WorkItem>();
+	for (const wi of workItems) {
+		workItemMap.set(`${wi.project_id}:${wi.identifier}`, wi);
+	}
+
+	const sessions = await getSessionsInMonth(projectIds, year, month);
+	const sessionIds = sessions.map((s) => s.id);
+	const commits = await getCommitsBySessionIds(sessionIds);
+
+	// Group commits by session
+	const commitsBySession = new Map<number, Commit[]>();
+	for (const commit of commits) {
+		const list = commitsBySession.get(commit.session_id) ?? [];
+		list.push(commit);
+		commitsBySession.set(commit.session_id, list);
+	}
+
+	// Enrich sessions with project and commits
+	const sessionsWithDetails: SessionWithDetails[] = sessions.map((session) => {
+		const sessionCommits = commitsBySession.get(session.id) ?? [];
+		// Flag sessions where commits might be missing:
+		// start_commit and end_commit exist and differ, but no commits recorded
+		const maybeMissingCommits =
+			session.start_commit !== null &&
+			session.end_commit !== null &&
+			session.start_commit !== session.end_commit &&
+			sessionCommits.length === 0;
+
+		return {
+			...session,
+			project: projectMap.get(session.project_id)!,
+			commits: sessionCommits,
+			maybeMissingCommits
+		};
+	});
+
+	// Calculate totals
+	const totalSeconds = sessions.reduce((sum, s) => sum + (s.active_seconds ?? 0), 0);
+	const totalHours = totalSeconds / 3600;
+	const totalSessions = sessions.length;
+	const totalCommits = commits.length;
+
+	// Group by work item
+	const workItemStats = new Map<
+		string,
+		{
+			workItem: string;
+			workItemId: number | null; // Database ID for updates
+			title: string | null;
+			description: string | null;
+			sessions: SessionWithDetails[];
+			totalSeconds: number;
+			commits: Commit[];
+		}
+	>();
+
+	for (const session of sessionsWithDetails) {
+		const workItemIdentifier = session.work_item ?? 'unknown';
+		// Look up the work item from database
+		const dbWorkItem = workItemMap.get(`${session.project_id}:${workItemIdentifier}`);
+
+		const existing = workItemStats.get(workItemIdentifier) ?? {
+			workItem: workItemIdentifier,
+			workItemId: dbWorkItem?.id ?? null,
+			title: dbWorkItem?.title ?? null,
+			description: dbWorkItem?.description ?? null,
+			sessions: [],
+			totalSeconds: 0,
+			commits: []
+		};
+		existing.sessions.push(session);
+		existing.totalSeconds += session.active_seconds ?? 0;
+		existing.commits.push(...session.commits);
+		workItemStats.set(workItemIdentifier, existing);
+	}
+
+	// Group by date
+	const dailyStats = new Map<
+		string,
+		{
+			date: string;
+			sessions: SessionWithDetails[];
+			totalSeconds: number;
+		}
+	>();
+
+	for (const session of sessionsWithDetails) {
+		const date = session.started_at.slice(0, 10); // YYYY-MM-DD
+		const existing = dailyStats.get(date) ?? {
+			date,
+			sessions: [],
+			totalSeconds: 0
+		};
+		existing.sessions.push(session);
+		existing.totalSeconds += session.active_seconds ?? 0;
+		dailyStats.set(date, existing);
+	}
+
+	// Minimum display threshold: 5 minutes (300 seconds)
+	const MIN_DISPLAY_SECONDS = 300;
+
+	// Sort by date descending, filter out days/sessions below threshold
+	const dailyStatsList = Array.from(dailyStats.values())
+		.map((day) => ({
+			...day,
+			sessions: day.sessions.filter((s) => (s.active_seconds ?? 0) >= MIN_DISPLAY_SECONDS)
+		}))
+		.filter((day) => day.totalSeconds >= MIN_DISPLAY_SECONDS)
+		.sort((a, b) => b.date.localeCompare(a.date));
+
+	// Filter out work items below threshold
+	const workItemStatsList = Array.from(workItemStats.values())
+		.filter((item) => item.totalSeconds >= MIN_DISPLAY_SECONDS)
+		.sort((a, b) => b.totalSeconds - a.totalSeconds);
+
+	return {
+		client,
+		year,
+		month,
+		projects,
+		sessionsWithDetails,
+		totalHours,
+		totalSessions,
+		totalCommits,
+		workItemStats: workItemStatsList,
+		dailyStats: dailyStatsList
+	};
+};
+
+export const actions: Actions = {
+	updateWorkItem: async ({ request }) => {
+		const formData = await request.formData();
+		const id = Number(formData.get('id'));
+		const title = formData.get('title') as string | null;
+		const description = formData.get('description') as string | null;
+
+		if (!id || isNaN(id)) {
+			return fail(400, { error: '無效的工作項 ID' });
+		}
+
+		try {
+			const updated = await updateWorkItem(id, {
+				title: title || null,
+				description: description || null
+			});
+
+			if (!updated) {
+				return fail(404, { error: '找不到工作項' });
+			}
+
+			return { success: true, workItem: updated };
+		} catch (e) {
+			console.error('Failed to update work item:', e);
+			return fail(500, { error: '更新失敗' });
+		}
+	}
+};
