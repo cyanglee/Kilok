@@ -24,7 +24,8 @@ Kilok 透過 Claude Code 的 statusline 整合，自動記錄每個專案的工�
 | 1 | [編譯安裝](#步驟-1編譯安裝) | 必要 | 編譯並安裝 CLI 和 MCP Server |
 | 2 | [Statusline 設定](#步驟-2設定-statusline) | 必要 | 啟用自動時間追蹤 |
 | 3 | [MCP Server 設定](#步驟-3設定-mcp-server) | 必要 | 讓 `/kilok` 指令可以存取資料 |
-| 4 | [雲端同步（Turso）](#步驟-4雲端同步可選) | 可選 | 多裝置同步、Web 儀表板 |
+| 4 | [雲端同步（Turso）](#步驟-4雲端同步可選) | 可選 | 多裝置同步 |
+| 5 | [Web 儀表板](#步驟-5web-儀表板可選) | 可選 | 視覺化報告介面（需要步驟 4） |
 
 ---
 
@@ -193,6 +194,54 @@ url = "libsql://kilok-yourusername.turso.io"
 
 ```bash
 claude-time-tracker sync
+```
+
+---
+
+## 步驟 5：Web 儀表板（可選）
+
+Web 儀表板提供視覺化的時間報告介面，方便與客戶或團隊分享。需要先完成步驟 4（Turso 雲端同步）。
+
+### 5.1 安裝相依套件
+
+```bash
+cd apps/web
+bun install
+```
+
+### 5.2 設定環境變數
+
+複製範例設定檔：
+
+```bash
+cp .env.example .env
+```
+
+編輯 `.env`：
+
+```bash
+# Turso 資料庫連線（與步驟 4 相同）
+TURSO_DATABASE_URL="libsql://kilok-yourusername.turso.io"
+TURSO_AUTH_TOKEN="your-token-here"
+
+# 管理員密碼（用於登入 /admin）
+ADMIN_PASSWORD="your-admin-password"
+```
+
+### 5.3 啟動開發伺服器
+
+```bash
+bun dev
+```
+
+開啟瀏覽器前往 `http://localhost:5173`。
+
+### 5.4 部署（可選）
+
+Web 儀表板可以部署到任何支援 Node.js 的平台（Vercel、Cloudflare Pages、Fly.io 等）：
+
+```bash
+bun run build
 ```
 
 ---
