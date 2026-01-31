@@ -31,7 +31,9 @@ pub struct WorkItem {
 pub struct Session {
     pub id: i64,
     pub project_id: i64,
+    pub project_name: Option<String>,
     pub branch: String,
+    pub work_item: Option<String>,
     pub started_at: DateTime<Utc>,
     pub ended_at: Option<DateTime<Utc>>,
     pub active_seconds: Option<i64>,
@@ -44,6 +46,9 @@ pub struct Commit {
     pub session_id: i64,
     pub hash: String,
     pub message: Option<String>,
+    pub committed_at: Option<DateTime<Utc>>,
+    /// Actual time spent working on this commit (calculated from heartbeats)
+    pub active_seconds: Option<i64>,
 }
 
 /// Work item detail with sessions and commits
@@ -204,7 +209,117 @@ impl DbWrapper {
             ).await.context("Failed to add work_item_source column")?;
         }
 
+        // Run migration: add ignored column to projects if not exists
+        if !project_columns.contains(&"ignored".to_string()) {
+            self.conn.execute(
+                "ALTER TABLE projects ADD COLUMN ignored INTEGER DEFAULT 0",
+                (),
+            ).await.context("Failed to add ignored column")?;
+        }
+
         Ok(())
+    }
+
+    /// List sessions with optional project and month filter
+    pub async fn list_sessions(
+        &self,
+        project: Option<&str>,
+        month: Option<&str>,
+    ) -> Result<Vec<Session>> {
+        let mut sessions = Vec::new();
+
+        // Parse month filter
+        let (start, end) = if let Some(m) = month {
+            parse_month_range(m)?
+        } else {
+            (None, None)
+        };
+
+        // Build query based on filters
+        // All queries JOIN with projects to get display_name (with fallback to path basename)
+        // COALESCE + REPLACE extracts the last path component when display_name is NULL
+        // Use LOWER() for case-insensitive matching
+        let query = match (project, start.as_ref(), end.as_ref()) {
+            (Some(_), Some(_), Some(_)) => {
+                "SELECT s.id, s.project_id,
+                        COALESCE(p.display_name, REPLACE(p.path, RTRIM(p.path, REPLACE(p.path, '/', '')), '')) as project_name,
+                        s.branch, s.work_item, s.started_at, s.ended_at, s.active_seconds
+                 FROM sessions s
+                 JOIN projects p ON s.project_id = p.id
+                 WHERE (LOWER(p.path) LIKE ?1 OR LOWER(p.display_name) LIKE ?1)
+                   AND s.started_at >= ?2 AND s.started_at < ?3
+                   AND s.status = 'completed'
+                 ORDER BY s.started_at"
+            }
+            (Some(_), None, None) => {
+                "SELECT s.id, s.project_id,
+                        COALESCE(p.display_name, REPLACE(p.path, RTRIM(p.path, REPLACE(p.path, '/', '')), '')) as project_name,
+                        s.branch, s.work_item, s.started_at, s.ended_at, s.active_seconds
+                 FROM sessions s
+                 JOIN projects p ON s.project_id = p.id
+                 WHERE (LOWER(p.path) LIKE ?1 OR LOWER(p.display_name) LIKE ?1)
+                   AND s.status = 'completed'
+                 ORDER BY s.started_at"
+            }
+            (None, Some(_), Some(_)) => {
+                "SELECT s.id, s.project_id,
+                        COALESCE(p.display_name, REPLACE(p.path, RTRIM(p.path, REPLACE(p.path, '/', '')), '')) as project_name,
+                        s.branch, s.work_item, s.started_at, s.ended_at, s.active_seconds
+                 FROM sessions s
+                 JOIN projects p ON s.project_id = p.id
+                 WHERE s.started_at >= ?1 AND s.started_at < ?2
+                   AND s.status = 'completed'
+                 ORDER BY s.started_at"
+            }
+            _ => {
+                "SELECT s.id, s.project_id,
+                        COALESCE(p.display_name, REPLACE(p.path, RTRIM(p.path, REPLACE(p.path, '/', '')), '')) as project_name,
+                        s.branch, s.work_item, s.started_at, s.ended_at, s.active_seconds
+                 FROM sessions s
+                 JOIN projects p ON s.project_id = p.id
+                 WHERE s.status = 'completed'
+                 ORDER BY s.started_at"
+            }
+        };
+
+        let mut rows = match (project, start.as_ref(), end.as_ref()) {
+            (Some(p), Some(s), Some(e)) => {
+                let pattern = format!("%{}%", p.to_lowercase());
+                self.conn
+                    .query(query, params![pattern, s.to_rfc3339(), e.to_rfc3339()])
+                    .await?
+            }
+            (Some(p), None, None) => {
+                let pattern = format!("%{}%", p.to_lowercase());
+                self.conn.query(query, params![pattern]).await?
+            }
+            (None, Some(s), Some(e)) => {
+                self.conn
+                    .query(query, params![s.to_rfc3339(), e.to_rfc3339()])
+                    .await?
+            }
+            _ => self.conn.query(query, ()).await?,
+        };
+
+        while let Some(row) = rows.next().await? {
+            sessions.push(Session {
+                id: row.get::<i64>(0)?,
+                project_id: row.get::<i64>(1)?,
+                project_name: row.get::<Option<String>>(2)?,
+                branch: row.get::<String>(3)?,
+                work_item: row.get::<Option<String>>(4)?,
+                started_at: parse_datetime(row.get::<String>(5)?),
+                ended_at: row.get::<Option<String>>(6)?.map(parse_datetime),
+                active_seconds: row.get::<Option<i64>>(7)?,
+            });
+        }
+
+        Ok(sessions)
+    }
+
+    /// Get commits for a session (public method for MCP)
+    pub async fn get_session_commits_public(&self, session_id: i64) -> Result<Vec<Commit>> {
+        self.get_session_commits(session_id).await
     }
 
     /// List work items with optional project and month filter
@@ -223,13 +338,14 @@ impl DbWrapper {
         };
 
         // Build query based on filters
+        // Use LOWER() for case-insensitive matching
         let query = match (project, start.as_ref(), end.as_ref()) {
             (Some(_), Some(_), Some(_)) => {
                 "SELECT w.id, w.project_id, w.identifier, w.title, w.description,
                         w.time_adjustment_seconds, w.completed_date, w.created_at, w.updated_at
                  FROM work_items w
                  JOIN projects p ON w.project_id = p.id
-                 WHERE (p.path LIKE ?1 OR p.display_name LIKE ?1)
+                 WHERE (LOWER(p.path) LIKE ?1 OR LOWER(p.display_name) LIKE ?1)
                    AND w.created_at >= ?2 AND w.created_at < ?3
                  ORDER BY w.created_at DESC"
             }
@@ -238,7 +354,7 @@ impl DbWrapper {
                         w.time_adjustment_seconds, w.completed_date, w.created_at, w.updated_at
                  FROM work_items w
                  JOIN projects p ON w.project_id = p.id
-                 WHERE p.path LIKE ?1 OR p.display_name LIKE ?1
+                 WHERE LOWER(p.path) LIKE ?1 OR LOWER(p.display_name) LIKE ?1
                  ORDER BY w.created_at DESC"
             }
             (None, Some(_), Some(_)) => {
@@ -257,13 +373,13 @@ impl DbWrapper {
 
         let mut rows = match (project, start.as_ref(), end.as_ref()) {
             (Some(p), Some(s), Some(e)) => {
-                let pattern = format!("%{}%", p);
+                let pattern = format!("%{}%", p.to_lowercase());
                 self.conn
                     .query(query, params![pattern, s.to_rfc3339(), e.to_rfc3339()])
                     .await?
             }
             (Some(p), None, None) => {
-                let pattern = format!("%{}%", p);
+                let pattern = format!("%{}%", p.to_lowercase());
                 self.conn.query(query, params![pattern]).await?
             }
             (None, Some(s), Some(e)) => {
@@ -288,7 +404,7 @@ impl DbWrapper {
         let mut rows = self
             .conn
             .query(
-                "SELECT c.id, c.session_id, c.hash, c.message
+                "SELECT c.id, c.session_id, c.hash, c.message, c.committed_at, c.active_seconds
              FROM commits c
              JOIN sessions s ON c.session_id = s.id
              WHERE s.work_item_id = ?1
@@ -303,6 +419,8 @@ impl DbWrapper {
                 session_id: row.get::<i64>(1)?,
                 hash: row.get::<String>(2)?,
                 message: row.get::<Option<String>>(3)?,
+                committed_at: row.get::<Option<String>>(4)?.map(|s| parse_datetime(s)),
+                active_seconds: row.get::<Option<i64>>(5)?,
             });
         }
 
@@ -352,9 +470,13 @@ impl DbWrapper {
         let mut session_rows = self
             .conn
             .query(
-                "SELECT id, project_id, branch, started_at, ended_at, active_seconds
-             FROM sessions WHERE work_item_id = ?1
-             ORDER BY started_at",
+                "SELECT s.id, s.project_id,
+                        COALESCE(p.display_name, REPLACE(p.path, RTRIM(p.path, REPLACE(p.path, '/', '')), '')) as project_name,
+                        s.branch, s.work_item, s.started_at, s.ended_at, s.active_seconds
+                 FROM sessions s
+                 JOIN projects p ON s.project_id = p.id
+                 WHERE s.work_item_id = ?1
+                 ORDER BY s.started_at",
                 params![work_item.id],
             )
             .await?;
@@ -363,10 +485,12 @@ impl DbWrapper {
             let session = Session {
                 id: row.get::<i64>(0)?,
                 project_id: row.get::<i64>(1)?,
-                branch: row.get::<String>(2)?,
-                started_at: parse_datetime(row.get::<String>(3)?),
-                ended_at: row.get::<Option<String>>(4)?.map(parse_datetime),
-                active_seconds: row.get::<Option<i64>>(5)?,
+                project_name: row.get::<Option<String>>(2)?,
+                branch: row.get::<String>(3)?,
+                work_item: row.get::<Option<String>>(4)?,
+                started_at: parse_datetime(row.get::<String>(5)?),
+                ended_at: row.get::<Option<String>>(6)?.map(parse_datetime),
+                active_seconds: row.get::<Option<i64>>(7)?,
             };
 
             // Get commits for this session
@@ -426,7 +550,7 @@ impl DbWrapper {
         let mut rows = self
             .conn
             .query(
-                "SELECT id, session_id, hash, message FROM commits
+                "SELECT id, session_id, hash, message, committed_at, active_seconds FROM commits
              WHERE session_id = ?1 ORDER BY committed_at",
                 params![session_id],
             )
@@ -438,6 +562,8 @@ impl DbWrapper {
                 session_id: row.get::<i64>(1)?,
                 hash: row.get::<String>(2)?,
                 message: row.get::<Option<String>>(3)?,
+                committed_at: row.get::<Option<String>>(4)?.map(|s| parse_datetime(s)),
+                active_seconds: row.get::<Option<i64>>(5)?,
             });
         }
 
@@ -562,6 +688,82 @@ impl DbWrapper {
         self.conn.execute(&query, params).await?;
         self.get_work_item_by_id(work_item_id).await
     }
+
+    /// List all projects with optional filter
+    pub async fn list_projects(&self, filter: Option<&str>) -> Result<Vec<Project>> {
+        let mut projects = Vec::new();
+
+        let (query, params): (&str, Vec<libsql::Value>) = if let Some(f) = filter {
+            let pattern = format!("%{}%", f.to_lowercase());
+            (
+                "SELECT p.id, p.path, p.display_name,
+                        (SELECT COUNT(*) FROM sessions WHERE project_id = p.id) as session_count
+                 FROM projects p
+                 WHERE LOWER(p.path) LIKE ?1 OR LOWER(p.display_name) LIKE ?1
+                 ORDER BY session_count DESC",
+                vec![pattern.into()],
+            )
+        } else {
+            (
+                "SELECT p.id, p.path, p.display_name,
+                        (SELECT COUNT(*) FROM sessions WHERE project_id = p.id) as session_count
+                 FROM projects p
+                 ORDER BY session_count DESC",
+                vec![],
+            )
+        };
+
+        let mut rows = self.conn.query(query, params).await?;
+
+        while let Some(row) = rows.next().await? {
+            projects.push(Project {
+                id: row.get::<i64>(0)?,
+                path: row.get::<String>(1)?,
+                display_name: row.get::<Option<String>>(2)?,
+                session_count: row.get::<i64>(3)?,
+            });
+        }
+
+        Ok(projects)
+    }
+
+    /// Update a project's display name
+    pub async fn update_project_display_name(&self, project_id: i64, display_name: &str) -> Result<Project> {
+        self.conn
+            .execute(
+                "UPDATE projects SET display_name = ?1 WHERE id = ?2",
+                params![display_name, project_id],
+            )
+            .await?;
+
+        // Fetch updated project
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT p.id, p.path, p.display_name,
+                        (SELECT COUNT(*) FROM sessions WHERE project_id = p.id) as session_count
+                 FROM projects p WHERE p.id = ?1",
+                params![project_id],
+            )
+            .await?;
+
+        let row = rows.next().await?.context("Project not found")?;
+        Ok(Project {
+            id: row.get::<i64>(0)?,
+            path: row.get::<String>(1)?,
+            display_name: row.get::<Option<String>>(2)?,
+            session_count: row.get::<i64>(3)?,
+        })
+    }
+}
+
+/// Project from database
+#[derive(Debug, Clone)]
+pub struct Project {
+    pub id: i64,
+    pub path: String,
+    pub display_name: Option<String>,
+    pub session_count: i64,
 }
 
 // Helper functions

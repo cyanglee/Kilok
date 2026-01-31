@@ -69,6 +69,24 @@ pub struct ListWorkItemsParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListSessionsParams {
+    /// Project name or path (optional)
+    #[schemars(description = "專案名稱或路徑")]
+    pub project: Option<String>,
+    /// Month in "YYYY-MM" format (optional)
+    #[schemars(description = "月份，格式為 YYYY-MM")]
+    pub month: Option<String>,
+    /// Include commit list in response
+    #[serde(default = "default_true")]
+    #[schemars(description = "是否包含 commit 列表（預設為 true）")]
+    pub include_commits: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetWorkItemParams {
     /// Work item ID
     #[schemars(description = "工作項目 ID")]
@@ -116,10 +134,47 @@ pub struct UpdateWorkItemParams {
     pub completed_date: Option<String>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListProjectsParams {
+    /// Filter by path or display name (optional)
+    #[schemars(description = "依路徑或顯示名稱篩選（選填）")]
+    pub filter: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct UpdateProjectParams {
+    /// Project ID
+    #[schemars(description = "專案 ID")]
+    pub project_id: i64,
+    /// New display name
+    #[schemars(description = "新的顯示名稱")]
+    pub display_name: String,
+}
+
 // Response types
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ListWorkItemsResponse {
     pub work_items: Vec<WorkItemResponse>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ListSessionsResponse {
+    pub sessions: Vec<SessionDetailResponse>,
+    pub total_seconds: i64,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SessionDetailResponse {
+    pub id: i64,
+    pub project_id: i64,
+    pub project_name: Option<String>,
+    pub branch: String,
+    pub work_item: Option<String>,
+    pub started_at: String,
+    pub ended_at: Option<String>,
+    pub active_seconds: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commits: Option<Vec<CommitResponse>>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -161,6 +216,19 @@ pub struct SessionResponse {
 pub struct CommitResponse {
     pub hash: String,
     pub message: String,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ProjectResponse {
+    pub id: i64,
+    pub path: String,
+    pub display_name: Option<String>,
+    pub session_count: i64,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ListProjectsResponse {
+    pub projects: Vec<ProjectResponse>,
 }
 
 #[tool_router]
@@ -210,6 +278,61 @@ impl TimeTrackerServer {
         }
 
         Ok(Json(ListWorkItemsResponse { work_items: responses }))
+    }
+
+    /// List all sessions for reporting (includes main branch work)
+    #[tool(description = "列出所有工作 sessions，包含 main branch 的工作。用於產生完整的時間報告。")]
+    async fn list_sessions(
+        &self,
+        params: Parameters<ListSessionsParams>,
+    ) -> Result<Json<ListSessionsResponse>, String> {
+        let db = self.get_db().await.map_err(|e| e.to_string())?;
+
+        let sessions = db
+            .list_sessions(params.0.project.as_deref(), params.0.month.as_deref())
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let mut responses = Vec::new();
+        let mut total_seconds: i64 = 0;
+
+        for session in sessions {
+            let commits = if params.0.include_commits {
+                Some(
+                    db.get_session_commits_public(session.id)
+                        .await
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|c| CommitResponse {
+                            hash: c.hash,
+                            message: c.message.unwrap_or_default(),
+                        })
+                        .collect(),
+                )
+            } else {
+                None
+            };
+
+            let active_secs = session.active_seconds.unwrap_or(0);
+            total_seconds += active_secs;
+
+            responses.push(SessionDetailResponse {
+                id: session.id,
+                project_id: session.project_id,
+                project_name: session.project_name,
+                branch: session.branch,
+                work_item: session.work_item,
+                started_at: session.started_at.to_rfc3339(),
+                ended_at: session.ended_at.map(|dt| dt.to_rfc3339()),
+                active_seconds: active_secs,
+                commits,
+            });
+        }
+
+        Ok(Json(ListSessionsResponse {
+            sessions: responses,
+            total_seconds,
+        }))
     }
 
     /// Get detailed information about a specific work item
@@ -364,6 +487,53 @@ impl TimeTrackerServer {
         };
 
         Ok(Json(response))
+    }
+
+    /// List all tracked projects
+    #[tool(description = "列出所有已追蹤的專案，包含路徑、顯示名稱和 session 數量")]
+    async fn list_projects(
+        &self,
+        params: Parameters<ListProjectsParams>,
+    ) -> Result<Json<ListProjectsResponse>, String> {
+        let db = self.get_db().await.map_err(|e| e.to_string())?;
+
+        let projects = db
+            .list_projects(params.0.filter.as_deref())
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let responses: Vec<ProjectResponse> = projects
+            .into_iter()
+            .map(|p| ProjectResponse {
+                id: p.id,
+                path: p.path,
+                display_name: p.display_name,
+                session_count: p.session_count,
+            })
+            .collect();
+
+        Ok(Json(ListProjectsResponse { projects: responses }))
+    }
+
+    /// Update a project's display name
+    #[tool(description = "更新專案的顯示名稱。用於設定專案的友善名稱以便識別。")]
+    async fn update_project(
+        &self,
+        params: Parameters<UpdateProjectParams>,
+    ) -> Result<Json<ProjectResponse>, String> {
+        let db = self.get_db().await.map_err(|e| e.to_string())?;
+
+        let project = db
+            .update_project_display_name(params.0.project_id, &params.0.display_name)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(Json(ProjectResponse {
+            id: project.id,
+            path: project.path,
+            display_name: project.display_name,
+            session_count: project.session_count,
+        }))
     }
 }
 
