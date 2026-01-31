@@ -5,7 +5,9 @@ mod git;
 mod idle;
 mod models;
 mod report;
+mod statusline;
 mod tracker;
+mod weather;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -15,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use cli::{Cli, Commands, ConfigAction, ProjectsAction};
 use config::EffectiveConfig;
-use db::Database;
+use db::{Database, SyncStats};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -35,6 +37,7 @@ async fn main() -> Result<()> {
         Commands::Status => cmd_status().await,
         Commands::ActiveTime { path } => cmd_active_time(&path).await,
         Commands::Sync { path } => cmd_sync(path).await,
+        Commands::PushToRemote { dry_run } => cmd_push_to_remote(dry_run).await,
         Commands::Config { action } => match action {
             ConfigAction::Init => cmd_config_init(),
             ConfigAction::Edit => cmd_config_edit(),
@@ -44,6 +47,7 @@ async fn main() -> Result<()> {
             ProjectsAction::List => cmd_projects_list().await,
             ProjectsAction::SetName { path, name } => cmd_projects_set_name(&path, &name).await,
         },
+        Commands::Statusline => cmd_statusline().await,
     }
 }
 
@@ -90,15 +94,20 @@ async fn cmd_heartbeat(path: &str) -> Result<()> {
         return Ok(());
     }
 
+    // Get current HEAD commit for per-commit time tracking
+    let commit_hash = git::get_git_info(&project_path)
+        .ok()
+        .and_then(|g| g.head_commit);
+
     // Write heartbeat to local cache (no DB access)
-    write_local_heartbeat(&project_path)?;
+    write_local_heartbeat(&project_path, commit_hash.as_deref())?;
 
     Ok(())
 }
 
 /// Write a heartbeat to local cache file
-/// Format: {"timestamp":"2026-01-24T00:12:34Z","project_path":"/path/to/project","unix_ts":1234567890}
-fn write_local_heartbeat(project_path: &Path) -> Result<()> {
+/// Format: {"timestamp":"...","project_path":"...","unix_ts":...,"commit_hash":"..."}
+fn write_local_heartbeat(project_path: &Path, commit_hash: Option<&str>) -> Result<()> {
     use std::io::Write;
 
     let home_dir = dirs::home_dir().context("Failed to get home directory")?;
@@ -111,7 +120,8 @@ fn write_local_heartbeat(project_path: &Path) -> Result<()> {
     let entry = serde_json::json!({
         "timestamp": now.to_rfc3339(),
         "project_path": project_path.to_string_lossy(),
-        "unix_ts": now.timestamp()
+        "unix_ts": now.timestamp(),
+        "commit_hash": commit_hash
     });
 
     let mut file = fs::OpenOptions::new()
@@ -445,8 +455,15 @@ async fn cmd_sync(path: Option<String>) -> Result<()> {
         .with_context(|| format!("Failed to open heartbeat cache: {}", heartbeat_file.display()))?;
     let reader = BufReader::new(file);
 
+    // Heartbeat entry with commit hash
+    #[derive(Clone)]
+    struct HeartbeatEntry {
+        timestamp: chrono::DateTime<Utc>,
+        commit_hash: Option<String>,
+    }
+
     // Group heartbeats by project path
-    let mut heartbeats_by_project: HashMap<String, Vec<chrono::DateTime<Utc>>> = HashMap::new();
+    let mut heartbeats_by_project: HashMap<String, Vec<HeartbeatEntry>> = HashMap::new();
 
     for line in reader.lines() {
         let line = line?;
@@ -454,17 +471,24 @@ async fn cmd_sync(path: Option<String>) -> Result<()> {
             continue;
         }
 
-        // Parse JSON: {"timestamp":"2026-01-24T00:12:34Z","project_path":"/path/to/project","unix_ts":1234567890}
+        // Parse JSON: {"timestamp":"...","project_path":"...","unix_ts":...,"commit_hash":"..."}
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
             if let (Some(timestamp_str), Some(project_path)) = (
                 json.get("timestamp").and_then(|v| v.as_str()),
                 json.get("project_path").and_then(|v| v.as_str()),
             ) {
                 if let Ok(timestamp) = chrono::DateTime::parse_from_rfc3339(timestamp_str) {
+                    let commit_hash = json.get("commit_hash")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+
                     heartbeats_by_project
                         .entry(project_path.to_string())
                         .or_default()
-                        .push(timestamp.with_timezone(&Utc));
+                        .push(HeartbeatEntry {
+                            timestamp: timestamp.with_timezone(&Utc),
+                            commit_hash,
+                        });
                 }
             }
         }
@@ -477,10 +501,11 @@ async fn cmd_sync(path: Option<String>) -> Result<()> {
     }
 
     let mut synced_count = 0;
+    let mut settled_commits = 0;
 
-    for (project_path, mut timestamps) in heartbeats_by_project {
-        // Sort timestamps chronologically
-        timestamps.sort();
+    for (project_path, mut entries) in heartbeats_by_project {
+        // Sort entries chronologically
+        entries.sort_by_key(|e| e.timestamp);
 
         // Get git info for session creation
         let project_path_buf = PathBuf::from(&project_path);
@@ -520,7 +545,7 @@ async fn cmd_sync(path: Option<String>) -> Result<()> {
                     });
 
                 // Use earliest heartbeat timestamp as session start time
-                let earliest_ts = timestamps.first().copied();
+                let earliest_ts = entries.first().map(|e| e.timestamp);
 
                 let session = db.create_session_at(
                     project.id,
@@ -541,10 +566,31 @@ async fn cmd_sync(path: Option<String>) -> Result<()> {
             }
         };
 
-        // Record each heartbeat timestamp
-        for timestamp in timestamps {
-            db.record_heartbeat_at(session.id, timestamp).await?;
+        // Get last heartbeat from DB to check for commit changes
+        let last_db_heartbeat = db.get_last_heartbeat(session.id).await?;
+        let mut prev_commit = last_db_heartbeat.and_then(|h| h.commit_hash);
+
+        // Record each heartbeat and check for commit changes
+        for entry in &entries {
+            // Check if commit changed
+            if let (Some(ref prev), Some(ref current)) = (&prev_commit, &entry.commit_hash) {
+                if prev != current {
+                    // Commit changed! Settle time for the previous commit
+                    let heartbeats = db.get_heartbeats_for_commit(session.id, prev).await?;
+                    if !heartbeats.is_empty() {
+                        let active_seconds = calculate_active_time_simple(&heartbeats, project_config.idle_timeout_minutes);
+                        db.upsert_commit_time(session.id, prev, None, None, active_seconds).await?;
+                        settled_commits += 1;
+                    }
+                }
+            }
+
+            // Record heartbeat with commit hash
+            db.record_heartbeat_with_commit(session.id, entry.timestamp, entry.commit_hash.as_deref()).await?;
             synced_count += 1;
+
+            // Update prev_commit for next iteration
+            prev_commit = entry.commit_hash.clone();
         }
     }
 
@@ -553,7 +599,11 @@ async fn cmd_sync(path: Option<String>) -> Result<()> {
         .with_context(|| "Failed to remove heartbeat cache after sync")?;
 
     if synced_count > 0 {
-        eprintln!("Synced {} heartbeats to database", synced_count);
+        if settled_commits > 0 {
+            eprintln!("Synced {} heartbeats, settled {} commits", synced_count, settled_commits);
+        } else {
+            eprintln!("Synced {} heartbeats to database", synced_count);
+        }
     }
 
     Ok(())
@@ -577,4 +627,92 @@ fn calculate_active_time_simple(heartbeats: &[models::Heartbeat], idle_timeout_m
     }
 
     total_seconds
+}
+
+/// Push local database data to Turso (one-time migration)
+/// Uses SQL export/import for simplicity
+async fn cmd_push_to_remote(dry_run: bool) -> Result<()> {
+    let config = EffectiveConfig::load(None)?;
+
+    if !config.is_turso_enabled() {
+        println!("Turso is not configured. Nothing to push.");
+        return Ok(());
+    }
+
+    println!("Connecting to local database...");
+    let local_db = Database::open_local(&config.database_path).await?;
+
+    // Get summary of local data
+    let local_projects = local_db.list_projects().await?;
+    let sessions_count = local_db.count_sessions().await?;
+
+    println!("\nLocal database contains:");
+    println!("  {} projects", local_projects.len());
+    println!("  {} sessions", sessions_count);
+
+    if dry_run {
+        println!("\n[Dry run] Would sync the following projects to Turso:");
+        for project in &local_projects {
+            println!("  - {} ({})",
+                project.display_name.as_deref().unwrap_or("-"),
+                project.path
+            );
+        }
+        println!("\nRun without --dry-run to perform the sync.");
+        return Ok(());
+    }
+
+    println!("\nConnecting to Turso...");
+    let remote_db = Database::open_remote(
+        config.turso_url.as_ref().unwrap(),
+        config.turso_auth_token.as_ref().unwrap(),
+    ).await?;
+
+    // Sync using INSERT OR IGNORE for idempotency
+    println!("\nSyncing data to Turso...");
+
+    let synced = local_db.export_and_import_to(&remote_db).await?;
+
+    println!("\nSync complete!");
+    println!("  Projects: {}", synced.projects);
+    println!("  Sessions: {}", synced.sessions);
+    println!("  Heartbeats: {}", synced.heartbeats);
+    println!("  Commits: {}", synced.commits);
+
+    Ok(())
+}
+
+/// Generate powerlevel10k-style statusline for Claude Code
+async fn cmd_statusline() -> Result<()> {
+    use std::io::{self, Read};
+
+    // Read JSON input from stdin
+    let mut input_str = String::new();
+    io::stdin().read_to_string(&mut input_str)?;
+
+    let input: statusline::StatuslineInput = serde_json::from_str(&input_str)
+        .context("Failed to parse statusline input JSON")?;
+
+    // Get cwd for config and db
+    let cwd = input.cwd.as_deref().map(PathBuf::from);
+
+    // Load config (silently, no errors in statusline)
+    let config = match cwd.as_ref() {
+        Some(p) => EffectiveConfig::load(Some(p)).ok(),
+        None => EffectiveConfig::load(None).ok(),
+    };
+
+    // Generate and output statusline
+    let output = if let Some(ref cfg) = config {
+        // Try to open database for time tracking (optional, don't fail if unavailable)
+        let db = open_db(cfg).await.ok();
+        statusline::generate(&input, db.as_ref(), cfg).await
+    } else {
+        // No config available, generate minimal statusline
+        statusline::generate_minimal(&input)
+    };
+
+    print!("{}", output);
+
+    Ok(())
 }

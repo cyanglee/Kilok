@@ -73,6 +73,14 @@ pub enum Commands {
         path: Option<String>,
     },
 
+    /// Push local database to Turso (one-time migration)
+    /// Use this to sync existing local data that wasn't pushed to remote
+    PushToRemote {
+        /// Dry run - show what would be synced without actually syncing
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Manage configuration
     Config {
         #[command(subcommand)]
@@ -84,6 +92,10 @@ pub enum Commands {
         #[command(subcommand)]
         action: ProjectsAction,
     },
+
+    /// Generate powerlevel10k-style statusline for Claude Code
+    /// Reads JSON from stdin with cwd and model info
+    Statusline,
 }
 
 #[derive(Subcommand)]
