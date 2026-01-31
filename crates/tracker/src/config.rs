@@ -30,6 +30,29 @@ pub struct Settings {
     pub database_path: String,
     #[serde(default)]
     pub turso: Option<TursoSettings>,
+    #[serde(default)]
+    pub weather: WeatherSettings,
+}
+
+/// Weather display settings for statusline
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WeatherSettings {
+    /// CWA (Central Weather Administration) API key
+    pub api_key: Option<String>,
+    /// Location name for weather query (default: 北投區)
+    #[serde(default = "default_weather_location")]
+    pub location: String,
+    /// Cache TTL in minutes (default: 60)
+    #[serde(default = "default_weather_cache_ttl")]
+    pub cache_ttl_minutes: u32,
+}
+
+fn default_weather_location() -> String {
+    "北投區".to_string()
+}
+
+fn default_weather_cache_ttl() -> u32 {
+    60
 }
 
 /// Turso remote database settings for embedded replica sync
@@ -51,6 +74,7 @@ impl Default for Settings {
             idle_timeout_minutes: default_idle_timeout(),
             database_path: default_database_path(),
             turso: None,
+            weather: WeatherSettings::default(),
         }
     }
 }
@@ -128,6 +152,7 @@ pub struct EffectiveConfig {
     pub work_item_source: Option<WorkItemSource>,
     pub include_commits: bool,
     pub max_commits_per_item: usize,
+    pub weather: WeatherSettings,
 }
 
 impl EffectiveConfig {
@@ -167,6 +192,7 @@ impl EffectiveConfig {
                 .as_ref()
                 .and_then(|p| p.report.max_commits_per_item)
                 .unwrap_or(global.report.max_commits_per_item),
+            weather: global.settings.weather.clone(),
         })
     }
 
@@ -176,10 +202,11 @@ impl EffectiveConfig {
     }
 }
 
-/// Get the global config directory path
+/// Get the global config directory path (uses ~/.config for cross-platform consistency)
 pub fn global_config_dir() -> Result<PathBuf> {
-    let config_dir = dirs::config_dir()
-        .context("Could not determine config directory")?
+    let config_dir = dirs::home_dir()
+        .context("Could not determine home directory")?
+        .join(".config")
         .join("claude-time-tracker");
     Ok(config_dir)
 }
