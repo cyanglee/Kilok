@@ -69,7 +69,9 @@ pub async fn start_session(db: &Database, project_path: &Path, config: &Effectiv
 
 /// Record a heartbeat for the current session
 /// If no active session exists, silently succeeds (session will be created on next start)
-pub async fn record_heartbeat(db: &Database, project_path: &Path) -> Result<()> {
+/// Also records the current HEAD commit for per-commit time tracking
+/// When HEAD commit changes, immediately settles time for the previous commit
+pub async fn record_heartbeat(db: &Database, project_path: &Path, config: &EffectiveConfig) -> Result<()> {
     let path_str = project_path
         .to_str()
         .context("Invalid project path")?;
@@ -86,7 +88,63 @@ pub async fn record_heartbeat(db: &Database, project_path: &Path) -> Result<()> 
         None => return Ok(()),
     };
 
-    db.record_heartbeat(session.id).await?;
+    // Get current HEAD commit for per-commit time tracking
+    let git_info = git::get_git_info(project_path).ok();
+    let current_commit = git_info.as_ref().and_then(|g| g.head_commit.clone());
+
+    // Get last heartbeat to check if commit changed
+    let last_heartbeat = db.get_last_heartbeat(session.id).await?;
+    let now = chrono::Utc::now();
+
+    // Check if commit changed (new commit was made)
+    if let (Some(ref last_hb), Some(ref current)) = (&last_heartbeat, &current_commit) {
+        if let Some(ref prev_commit) = last_hb.commit_hash {
+            if prev_commit != current {
+                // Commit changed! Settle time for the previous commit
+                settle_commit_time(db, session.id, prev_commit, config.idle_timeout_minutes).await?;
+                eprintln!(
+                    "Commit changed: {} -> {}, settled time for previous commit",
+                    &prev_commit[..8.min(prev_commit.len())],
+                    &current[..8.min(current.len())]
+                );
+            }
+        }
+    }
+
+    // Record this heartbeat
+    db.record_heartbeat_with_commit(session.id, now, current_commit.as_deref()).await?;
+
+    Ok(())
+}
+
+/// Settle (calculate and save) time for a specific commit
+async fn settle_commit_time(
+    db: &Database,
+    session_id: i64,
+    commit_hash: &str,
+    idle_timeout_minutes: u32,
+) -> Result<()> {
+    // Get all heartbeats for this commit
+    let heartbeats = db.get_heartbeats_for_commit(session_id, commit_hash).await?;
+
+    if heartbeats.is_empty() {
+        return Ok(());
+    }
+
+    // Calculate active time for this commit
+    let active_seconds = calculate_active_time(&heartbeats, idle_timeout_minutes);
+
+    // Get commit message from git (if available)
+    // For now, we'll leave message as None - it will be filled in when session ends
+
+    // Save or update commit time
+    db.upsert_commit_time(
+        session_id,
+        commit_hash,
+        None,  // message will be filled later
+        None,  // committed_at will be filled later
+        active_seconds,
+    ).await?;
 
     Ok(())
 }
@@ -117,6 +175,9 @@ pub async fn stop_session(db: &Database, project_path: &Path, config: &Effective
     let heartbeats = db.get_heartbeats(session.id).await?;
     let active_seconds = calculate_active_time(&heartbeats, config.idle_timeout_minutes);
 
+    // Calculate per-commit time from heartbeats
+    let commit_times = calculate_per_commit_time(&heartbeats, config.idle_timeout_minutes);
+
     // Collect commits made during this session
     if let Some(ref start) = session.start_commit {
         match git::get_commits_between(
@@ -126,8 +187,24 @@ pub async fn stop_session(db: &Database, project_path: &Path, config: &Effective
         ) {
             Ok(commits) => {
                 if !commits.is_empty() {
-                    db.record_commits(session.id, &commits).await?;
-                    eprintln!("Recorded {} commits for session", commits.len());
+                    // Enrich commits with their tracked time
+                    let commits_with_time: Vec<_> = commits
+                        .into_iter()
+                        .map(|(hash, message, committed_at)| {
+                            let time = commit_times.get(&hash).copied();
+                            (hash, message, committed_at, time)
+                        })
+                        .collect();
+
+                    db.record_commits_with_time(session.id, &commits_with_time).await?;
+
+                    // Log commits with time
+                    let tracked_count = commits_with_time.iter().filter(|(_, _, _, t)| t.is_some()).count();
+                    eprintln!(
+                        "Recorded {} commits for session ({} with time tracking)",
+                        commits_with_time.len(),
+                        tracked_count
+                    );
                 }
             }
             Err(e) => {
@@ -210,6 +287,40 @@ fn calculate_active_time(heartbeats: &[crate::models::Heartbeat], idle_timeout_m
     total_seconds
 }
 
+/// Calculate per-commit time from heartbeats
+///
+/// Returns a map of commit_hash -> active_seconds for each commit.
+/// Time is attributed to the commit that was HEAD during each heartbeat interval.
+fn calculate_per_commit_time(
+    heartbeats: &[crate::models::Heartbeat],
+    idle_timeout_minutes: u32,
+) -> std::collections::HashMap<String, i64> {
+    use std::collections::HashMap;
+
+    let mut commit_times: HashMap<String, i64> = HashMap::new();
+
+    if heartbeats.is_empty() {
+        return commit_times;
+    }
+
+    let timeout_seconds = (idle_timeout_minutes as i64) * 60;
+
+    for window in heartbeats.windows(2) {
+        let interval = (window[1].timestamp - window[0].timestamp).num_seconds();
+
+        // Only count intervals within the idle timeout
+        if interval <= timeout_seconds {
+            // Attribute time to the commit at the START of the interval
+            // (the commit we were working on before the next heartbeat)
+            if let Some(ref commit_hash) = window[0].commit_hash {
+                *commit_times.entry(commit_hash.clone()).or_insert(0) += interval;
+            }
+        }
+    }
+
+    commit_times
+}
+
 /// Extract work item ID from branch name using regex pattern
 fn extract_work_item(branch: &str, pattern: Option<&str>) -> Option<String> {
     let pattern = pattern?;
@@ -289,27 +400,32 @@ mod tests {
                 id: 1,
                 session_id: 1,
                 timestamp: base,
+                commit_hash: None,
             },
             crate::models::Heartbeat {
                 id: 2,
                 session_id: 1,
                 timestamp: base + Duration::minutes(5),
+                commit_hash: None,
             },
             crate::models::Heartbeat {
                 id: 3,
                 session_id: 1,
                 timestamp: base + Duration::minutes(10),
+                commit_hash: None,
             },
             // 20 minute gap (user was away)
             crate::models::Heartbeat {
                 id: 4,
                 session_id: 1,
                 timestamp: base + Duration::minutes(30),
+                commit_hash: None,
             },
             crate::models::Heartbeat {
                 id: 5,
                 session_id: 1,
                 timestamp: base + Duration::minutes(35),
+                commit_hash: None,
             },
         ];
 
@@ -317,5 +433,55 @@ mod tests {
         // 5 min + 5 min (counted) + 20 min (not counted, > 10) + 5 min (counted) = 15 min = 900 seconds
         let active = calculate_active_time(&heartbeats, 10);
         assert_eq!(active, 900);
+    }
+
+    #[test]
+    fn test_calculate_per_commit_time() {
+        use chrono::Duration;
+
+        let base = Utc::now();
+        let heartbeats = vec![
+            crate::models::Heartbeat {
+                id: 1,
+                session_id: 1,
+                timestamp: base,
+                commit_hash: Some("abc123".to_string()),
+            },
+            crate::models::Heartbeat {
+                id: 2,
+                session_id: 1,
+                timestamp: base + Duration::minutes(5),
+                commit_hash: Some("abc123".to_string()),
+            },
+            crate::models::Heartbeat {
+                id: 3,
+                session_id: 1,
+                timestamp: base + Duration::minutes(10),
+                commit_hash: Some("def456".to_string()), // New commit
+            },
+            crate::models::Heartbeat {
+                id: 4,
+                session_id: 1,
+                timestamp: base + Duration::minutes(15),
+                commit_hash: Some("def456".to_string()),
+            },
+            crate::models::Heartbeat {
+                id: 5,
+                session_id: 1,
+                timestamp: base + Duration::minutes(18),
+                commit_hash: Some("ghi789".to_string()), // Another commit
+            },
+        ];
+
+        let commit_times = calculate_per_commit_time(&heartbeats, 10);
+
+        // abc123: 5 min (base to +5) + 5 min (+5 to +10) = 10 min = 600 seconds
+        assert_eq!(commit_times.get("abc123"), Some(&600));
+
+        // def456: 5 min (+10 to +15) + 3 min (+15 to +18) = 8 min = 480 seconds
+        assert_eq!(commit_times.get("def456"), Some(&480));
+
+        // ghi789: no time (it's the last commit, no interval after it)
+        assert_eq!(commit_times.get("ghi789"), None);
     }
 }

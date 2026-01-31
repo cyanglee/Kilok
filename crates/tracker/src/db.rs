@@ -99,6 +99,7 @@ impl Database {
             turso_url.to_string(),
             auth_token.to_string(),
         )
+        .read_your_writes(true)  // Ensure writes go to Turso immediately
         .build()
         .await
         .with_context(|| "Failed to build Turso connection")?;
@@ -271,6 +272,53 @@ impl Database {
                 "ALTER TABLE projects ADD COLUMN work_item_source TEXT",
                 (),
             ).await.context("Failed to add work_item_source column to projects")?;
+        }
+
+        if !project_columns.contains(&"ignored".to_string()) {
+            self.conn.execute(
+                "ALTER TABLE projects ADD COLUMN ignored INTEGER DEFAULT 0",
+                (),
+            ).await.context("Failed to add ignored column to projects")?;
+        }
+
+        // Migration: Add commit_hash to heartbeats table for per-commit time tracking
+        let heartbeat_columns: Vec<String> = {
+            let mut rows = self.conn.query(
+                "PRAGMA table_info(heartbeats)",
+                (),
+            ).await?;
+            let mut cols = Vec::new();
+            while let Some(row) = rows.next().await? {
+                cols.push(row.get::<String>(1)?);
+            }
+            cols
+        };
+
+        if !heartbeat_columns.contains(&"commit_hash".to_string()) {
+            self.conn.execute(
+                "ALTER TABLE heartbeats ADD COLUMN commit_hash TEXT",
+                (),
+            ).await.context("Failed to add commit_hash column to heartbeats")?;
+        }
+
+        // Migration: Add active_seconds to commits table for per-commit time tracking
+        let commit_columns: Vec<String> = {
+            let mut rows = self.conn.query(
+                "PRAGMA table_info(commits)",
+                (),
+            ).await?;
+            let mut cols = Vec::new();
+            while let Some(row) = rows.next().await? {
+                cols.push(row.get::<String>(1)?);
+            }
+            cols
+        };
+
+        if !commit_columns.contains(&"active_seconds".to_string()) {
+            self.conn.execute(
+                "ALTER TABLE commits ADD COLUMN active_seconds INTEGER",
+                (),
+            ).await.context("Failed to add active_seconds column to commits")?;
         }
 
         Ok(())
@@ -527,30 +575,41 @@ impl Database {
 
     // ==================== Heartbeats ====================
 
-    /// Record a heartbeat
+    /// Record a heartbeat (without commit tracking - legacy)
     pub async fn record_heartbeat(&self, session_id: i64) -> Result<Heartbeat> {
         let now = Utc::now();
-        self.record_heartbeat_at(session_id, now).await
+        self.record_heartbeat_with_commit(session_id, now, None).await
     }
 
     /// Record a heartbeat at a specific timestamp (for syncing from local cache)
     pub async fn record_heartbeat_at(&self, session_id: i64, timestamp: DateTime<Utc>) -> Result<Heartbeat> {
+        self.record_heartbeat_with_commit(session_id, timestamp, None).await
+    }
+
+    /// Record a heartbeat with current commit hash for per-commit time tracking
+    pub async fn record_heartbeat_with_commit(
+        &self,
+        session_id: i64,
+        timestamp: DateTime<Utc>,
+        commit_hash: Option<&str>,
+    ) -> Result<Heartbeat> {
         self.conn.execute(
-            "INSERT INTO heartbeats (session_id, timestamp) VALUES (?1, ?2)",
-            params![session_id, timestamp.to_rfc3339()],
+            "INSERT INTO heartbeats (session_id, timestamp, commit_hash) VALUES (?1, ?2, ?3)",
+            params![session_id, timestamp.to_rfc3339(), commit_hash],
         ).await?;
 
         Ok(Heartbeat {
             id: self.conn.last_insert_rowid(),
             session_id,
             timestamp,
+            commit_hash: commit_hash.map(|s| s.to_string()),
         })
     }
 
     /// Get heartbeats for a session
     pub async fn get_heartbeats(&self, session_id: i64) -> Result<Vec<Heartbeat>> {
         let mut rows = self.conn.query(
-            "SELECT id, session_id, timestamp FROM heartbeats
+            "SELECT id, session_id, timestamp, commit_hash FROM heartbeats
              WHERE session_id = ?1 ORDER BY timestamp",
             params![session_id],
         ).await?;
@@ -561,10 +620,109 @@ impl Database {
                 id: row.get::<i64>(0)?,
                 session_id: row.get::<i64>(1)?,
                 timestamp: parse_datetime(row.get::<String>(2)?),
+                commit_hash: row.get::<Option<String>>(3)?,
             });
         }
 
         Ok(heartbeats)
+    }
+
+    /// Get the last heartbeat for a session
+    pub async fn get_last_heartbeat(&self, session_id: i64) -> Result<Option<Heartbeat>> {
+        let mut rows = self.conn.query(
+            "SELECT id, session_id, timestamp, commit_hash FROM heartbeats
+             WHERE session_id = ?1 ORDER BY timestamp DESC LIMIT 1",
+            params![session_id],
+        ).await?;
+
+        match rows.next().await? {
+            Some(row) => Ok(Some(Heartbeat {
+                id: row.get::<i64>(0)?,
+                session_id: row.get::<i64>(1)?,
+                timestamp: parse_datetime(row.get::<String>(2)?),
+                commit_hash: row.get::<Option<String>>(3)?,
+            })),
+            None => Ok(None),
+        }
+    }
+
+    /// Get heartbeats for a specific commit within a session
+    pub async fn get_heartbeats_for_commit(
+        &self,
+        session_id: i64,
+        commit_hash: &str,
+    ) -> Result<Vec<Heartbeat>> {
+        let mut rows = self.conn.query(
+            "SELECT id, session_id, timestamp, commit_hash FROM heartbeats
+             WHERE session_id = ?1 AND commit_hash = ?2 ORDER BY timestamp",
+            params![session_id, commit_hash],
+        ).await?;
+
+        let mut heartbeats = Vec::new();
+        while let Some(row) = rows.next().await? {
+            heartbeats.push(Heartbeat {
+                id: row.get::<i64>(0)?,
+                session_id: row.get::<i64>(1)?,
+                timestamp: parse_datetime(row.get::<String>(2)?),
+                commit_hash: row.get::<Option<String>>(3)?,
+            });
+        }
+
+        Ok(heartbeats)
+    }
+
+    /// Check if a commit is already recorded for a session
+    pub async fn get_commit_by_hash(&self, session_id: i64, hash: &str) -> Result<Option<Commit>> {
+        let mut rows = self.conn.query(
+            "SELECT id, session_id, hash, message, committed_at, active_seconds FROM commits
+             WHERE session_id = ?1 AND hash = ?2",
+            params![session_id, hash],
+        ).await?;
+
+        match rows.next().await? {
+            Some(row) => Ok(Some(Commit {
+                id: row.get::<i64>(0)?,
+                session_id: row.get::<i64>(1)?,
+                hash: row.get::<String>(2)?,
+                message: row.get::<Option<String>>(3)?,
+                committed_at: row.get::<Option<String>>(4)?.map(parse_datetime),
+                active_seconds: row.get::<Option<i64>>(5)?,
+            })),
+            None => Ok(None),
+        }
+    }
+
+    /// Upsert commit with time (insert or update active_seconds)
+    pub async fn upsert_commit_time(
+        &self,
+        session_id: i64,
+        hash: &str,
+        message: Option<&str>,
+        committed_at: Option<DateTime<Utc>>,
+        active_seconds: i64,
+    ) -> Result<()> {
+        // Try to update existing commit
+        let result = self.conn.execute(
+            "UPDATE commits SET active_seconds = ?1 WHERE session_id = ?2 AND hash = ?3",
+            params![active_seconds, session_id, hash],
+        ).await?;
+
+        // If no rows updated, insert new commit
+        if result == 0 {
+            self.conn.execute(
+                "INSERT INTO commits (session_id, hash, message, committed_at, active_seconds)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    session_id,
+                    hash,
+                    message,
+                    committed_at.map(|dt| dt.to_rfc3339()),
+                    active_seconds
+                ],
+            ).await?;
+        }
+
+        Ok(())
     }
 
     // ==================== Work Items ====================
@@ -793,7 +951,7 @@ impl Database {
 
     // ==================== Commits ====================
 
-    /// Record commits for a session
+    /// Record commits for a session (without time tracking - legacy)
     pub async fn record_commits(&self, session_id: i64, commits: &[(String, String, Option<DateTime<Utc>>)]) -> Result<()> {
         for (hash, message, committed_at) in commits {
             self.conn.execute(
@@ -809,10 +967,31 @@ impl Database {
         Ok(())
     }
 
+    /// Record commits for a session with per-commit time tracking
+    pub async fn record_commits_with_time(
+        &self,
+        session_id: i64,
+        commits: &[(String, String, Option<DateTime<Utc>>, Option<i64>)],  // (hash, message, committed_at, active_seconds)
+    ) -> Result<()> {
+        for (hash, message, committed_at, active_seconds) in commits {
+            self.conn.execute(
+                "INSERT INTO commits (session_id, hash, message, committed_at, active_seconds) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    session_id,
+                    hash.as_str(),
+                    message.as_str(),
+                    committed_at.map(|dt| dt.to_rfc3339()),
+                    *active_seconds
+                ],
+            ).await?;
+        }
+        Ok(())
+    }
+
     /// Get commits for a session
     pub async fn get_commits(&self, session_id: i64) -> Result<Vec<Commit>> {
         let mut rows = self.conn.query(
-            "SELECT id, session_id, hash, message, committed_at FROM commits
+            "SELECT id, session_id, hash, message, committed_at, active_seconds FROM commits
              WHERE session_id = ?1 ORDER BY committed_at",
             params![session_id],
         ).await?;
@@ -825,11 +1004,206 @@ impl Database {
                 hash: row.get::<String>(2)?,
                 message: row.get::<Option<String>>(3)?,
                 committed_at: row.get::<Option<String>>(4)?.map(parse_datetime),
+                active_seconds: row.get::<Option<i64>>(5)?,
             });
         }
 
         Ok(commits)
     }
+
+    /// Count total sessions
+    pub async fn count_sessions(&self) -> Result<i64> {
+        let mut rows = self.conn.query("SELECT COUNT(*) FROM sessions", ()).await?;
+        if let Some(row) = rows.next().await? {
+            Ok(row.get::<i64>(0)?)
+        } else {
+            Ok(0)
+        }
+    }
+
+    /// Export data from this database and import to another (for migration)
+    pub async fn export_and_import_to(&self, target: &Database) -> Result<SyncStats> {
+        let mut stats = SyncStats::default();
+
+        // 1. Sync clients first
+        let mut rows = self.conn.query("SELECT id, slug, name, created_at FROM clients", ()).await?;
+        while let Some(row) = rows.next().await? {
+            let slug: String = row.get(1)?;
+            let name: String = row.get(2)?;
+            let created_at: String = row.get(3)?;
+
+            target.conn.execute(
+                "INSERT OR IGNORE INTO clients (slug, name, created_at) VALUES (?1, ?2, ?3)",
+                params![slug, name, created_at],
+            ).await?;
+        }
+
+        // 2. Sync projects (need to map old IDs to new IDs)
+        let mut project_map: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+
+        let mut rows = self.conn.query(
+            "SELECT id, path, git_remote, display_name, work_item_pattern, work_item_source, client_id, created_at FROM projects",
+            (),
+        ).await?;
+
+        while let Some(row) = rows.next().await? {
+            let old_id: i64 = row.get(0)?;
+            let path: String = row.get(1)?;
+            let git_remote: Option<String> = row.get(2)?;
+            let display_name: Option<String> = row.get(3)?;
+            let work_item_pattern: Option<String> = row.get(4)?;
+            let work_item_source: Option<String> = row.get(5)?;
+            let client_id: Option<i64> = row.get(6)?;
+            let created_at: String = row.get(7)?;
+
+            // Get client_id in target by matching slug
+            let target_client_id = if let Some(cid) = client_id {
+                let mut client_rows = self.conn.query(
+                    "SELECT slug FROM clients WHERE id = ?1",
+                    params![cid],
+                ).await?;
+                if let Some(client_row) = client_rows.next().await? {
+                    let slug: String = client_row.get(0)?;
+                    let mut target_client_rows = target.conn.query(
+                        "SELECT id FROM clients WHERE slug = ?1",
+                        params![slug],
+                    ).await?;
+                    if let Some(target_row) = target_client_rows.next().await? {
+                        Some(target_row.get::<i64>(0)?)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            // Insert or get existing project
+            target.conn.execute(
+                "INSERT OR IGNORE INTO projects (path, git_remote, display_name, work_item_pattern, work_item_source, client_id, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![path.clone(), git_remote, display_name, work_item_pattern, work_item_source, target_client_id, created_at],
+            ).await?;
+
+            // Get the target project ID
+            let mut target_rows = target.conn.query(
+                "SELECT id FROM projects WHERE path = ?1",
+                params![path],
+            ).await?;
+            if let Some(target_row) = target_rows.next().await? {
+                let new_id: i64 = target_row.get(0)?;
+                project_map.insert(old_id, new_id);
+                stats.projects += 1;
+            }
+        }
+
+        // 3. Sync sessions
+        let mut session_map: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+
+        let mut rows = self.conn.query(
+            "SELECT id, project_id, branch, work_item, start_commit, end_commit, started_at, ended_at, active_seconds, status FROM sessions",
+            (),
+        ).await?;
+
+        while let Some(row) = rows.next().await? {
+            let old_id: i64 = row.get(0)?;
+            let old_project_id: i64 = row.get(1)?;
+            let branch: String = row.get(2)?;
+            let work_item: Option<String> = row.get(3)?;
+            let start_commit: Option<String> = row.get(4)?;
+            let end_commit: Option<String> = row.get(5)?;
+            let started_at: String = row.get(6)?;
+            let ended_at: Option<String> = row.get(7)?;
+            let active_seconds: Option<i64> = row.get(8)?;
+            let status: String = row.get(9)?;
+
+            let new_project_id = match project_map.get(&old_project_id) {
+                Some(id) => *id,
+                None => continue,
+            };
+
+            // Check if session already exists (by project_id + started_at)
+            let mut exists_rows = target.conn.query(
+                "SELECT id FROM sessions WHERE project_id = ?1 AND started_at = ?2",
+                params![new_project_id, started_at.clone()],
+            ).await?;
+
+            if let Some(exists_row) = exists_rows.next().await? {
+                let existing_id: i64 = exists_row.get(0)?;
+                session_map.insert(old_id, existing_id);
+                continue; // Already exists
+            }
+
+            target.conn.execute(
+                "INSERT INTO sessions (project_id, branch, work_item, start_commit, end_commit, started_at, ended_at, active_seconds, status)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![new_project_id, branch, work_item, start_commit, end_commit, started_at, ended_at, active_seconds, status],
+            ).await?;
+
+            let new_id = target.conn.last_insert_rowid();
+            session_map.insert(old_id, new_id);
+            stats.sessions += 1;
+        }
+
+        // 4. Sync heartbeats
+        let mut rows = self.conn.query(
+            "SELECT session_id, timestamp FROM heartbeats",
+            (),
+        ).await?;
+
+        while let Some(row) = rows.next().await? {
+            let old_session_id: i64 = row.get(0)?;
+            let timestamp: String = row.get(1)?;
+
+            let new_session_id = match session_map.get(&old_session_id) {
+                Some(id) => *id,
+                None => continue,
+            };
+
+            target.conn.execute(
+                "INSERT OR IGNORE INTO heartbeats (session_id, timestamp) VALUES (?1, ?2)",
+                params![new_session_id, timestamp],
+            ).await?;
+            stats.heartbeats += 1;
+        }
+
+        // 5. Sync commits
+        let mut rows = self.conn.query(
+            "SELECT session_id, hash, message, committed_at FROM commits",
+            (),
+        ).await?;
+
+        while let Some(row) = rows.next().await? {
+            let old_session_id: i64 = row.get(0)?;
+            let hash: String = row.get(1)?;
+            let message: Option<String> = row.get(2)?;
+            let committed_at: Option<String> = row.get(3)?;
+
+            let new_session_id = match session_map.get(&old_session_id) {
+                Some(id) => *id,
+                None => continue,
+            };
+
+            target.conn.execute(
+                "INSERT OR IGNORE INTO commits (session_id, hash, message, committed_at) VALUES (?1, ?2, ?3, ?4)",
+                params![new_session_id, hash, message, committed_at],
+            ).await?;
+            stats.commits += 1;
+        }
+
+        Ok(stats)
+    }
+}
+
+/// Statistics from sync operation
+#[derive(Default)]
+pub struct SyncStats {
+    pub projects: i64,
+    pub sessions: i64,
+    pub heartbeats: i64,
+    pub commits: i64,
 }
 
 fn row_to_project(row: &libsql::Row) -> Result<Project> {

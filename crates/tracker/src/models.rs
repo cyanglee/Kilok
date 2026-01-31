@@ -93,6 +93,8 @@ pub struct Heartbeat {
     pub id: i64,
     pub session_id: i64,
     pub timestamp: DateTime<Utc>,
+    /// Current HEAD commit at the time of heartbeat (for per-commit time tracking)
+    pub commit_hash: Option<String>,
 }
 
 /// A commit associated with a session
@@ -103,6 +105,8 @@ pub struct Commit {
     pub hash: String,
     pub message: Option<String>,
     pub committed_at: Option<DateTime<Utc>>,
+    /// Actual time spent working on this commit (calculated from heartbeats)
+    pub active_seconds: Option<i64>,
 }
 
 /// A work item that groups multiple sessions
