@@ -86,38 +86,50 @@ export const load: PageServerLoad = async ({ params }) => {
 	const totalSessions = sessions.length;
 	const totalCommits = commits.length;
 
-	// Group by work item
+	// Group by branch (work_item is derived from branch, so branch is the primary key)
 	const workItemStats = new Map<
 		string,
 		{
-			workItem: string;
+			branch: string;
+			workItem: string; // Display name: work_item if available, otherwise branch
 			workItemId: number | null; // Database ID for updates
 			title: string | null;
 			description: string | null;
 			sessions: SessionWithDetails[];
 			totalSeconds: number;
 			commits: Commit[];
+			lastDate: string | null; // Last session date (YYYY-MM-DD)
 		}
 	>();
 
 	for (const session of sessionsWithDetails) {
-		const workItemIdentifier = session.work_item ?? 'unknown';
-		// Look up the work item from database
+		// Group by branch, display as work_item if available
+		const groupKey = session.branch;
+		const displayName = session.work_item ?? session.branch;
+		// Look up the work item from database (using work_item identifier if available)
+		const workItemIdentifier = session.work_item ?? session.branch;
 		const dbWorkItem = workItemMap.get(`${session.project_id}:${workItemIdentifier}`);
 
-		const existing = workItemStats.get(workItemIdentifier) ?? {
-			workItem: workItemIdentifier,
+		const existing = workItemStats.get(groupKey) ?? {
+			branch: groupKey,
+			workItem: displayName,
 			workItemId: dbWorkItem?.id ?? null,
 			title: dbWorkItem?.title ?? null,
 			description: dbWorkItem?.description ?? null,
 			sessions: [],
 			totalSeconds: 0,
-			commits: []
+			commits: [],
+			lastDate: null
 		};
 		existing.sessions.push(session);
 		existing.totalSeconds += session.active_seconds ?? 0;
 		existing.commits.push(...session.commits);
-		workItemStats.set(workItemIdentifier, existing);
+		// Track the latest date (use ended_at if available, otherwise started_at)
+		const sessionDate = (session.ended_at ?? session.started_at).slice(0, 10);
+		if (!existing.lastDate || sessionDate > existing.lastDate) {
+			existing.lastDate = sessionDate;
+		}
+		workItemStats.set(groupKey, existing);
 	}
 
 	// Group by date

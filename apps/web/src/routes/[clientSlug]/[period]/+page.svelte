@@ -42,6 +42,54 @@
 		editDescription = item.description ?? '';
 	}
 
+	// Parse description for sub-items with dates and time
+	// Format: "YYYY/MM/DD | Title | Time | Description" per line
+	interface SubItem {
+		date: string;
+		title: string;
+		time: string | null;
+		description: string;
+	}
+
+	function parseDescription(description: string | null): { summary: string | null; subItems: SubItem[] } {
+		if (!description) return { summary: null, subItems: [] };
+
+		const lines = description.split('\n').filter((l) => l.trim());
+		const subItems: SubItem[] = [];
+		const otherLines: string[] = [];
+
+		for (const line of lines) {
+			// Check if line matches "YYYY/MM/DD | Title | Time | Description" format (4 parts)
+			const match4 = line.match(/^(\d{4}\/\d{2}\/\d{2})\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*(.+)$/);
+			if (match4) {
+				subItems.push({
+					date: match4[1],
+					title: match4[2].trim(),
+					time: match4[3].trim(),
+					description: match4[4].trim()
+				});
+				continue;
+			}
+			// Fallback: "YYYY/MM/DD | Title | Description" format (3 parts, no time)
+			const match3 = line.match(/^(\d{4}\/\d{2}\/\d{2})\s*\|\s*([^|]+)\s*\|\s*(.+)$/);
+			if (match3) {
+				subItems.push({
+					date: match3[1],
+					title: match3[2].trim(),
+					time: null,
+					description: match3[3].trim()
+				});
+				continue;
+			}
+			otherLines.push(line);
+		}
+
+		return {
+			summary: otherLines.length > 0 ? otherLines.join('\n') : null,
+			subItems
+		};
+	}
+
 	function cancelEditing() {
 		editingWorkItemId = null;
 		editTitle = '';
@@ -143,17 +191,52 @@
 								</form>
 							{:else}
 								<!-- Display Mode -->
+								{@const parsed = parseDescription(item.description)}
 								<div class="flex items-start justify-between">
 									<div class="min-w-0 flex-1">
-										{#if item.title}
-											<h4 class="font-medium text-text">{item.title}</h4>
-										{:else}
-											<h4 class="font-medium text-text-muted italic">
-												{item.workItem !== 'unknown' ? item.workItem : '未分類工作'}
-											</h4>
+										<div class="flex items-center gap-2">
+											{#if item.title}
+												<h4 class="font-medium text-text">{item.title}</h4>
+											{:else}
+												<h4 class="font-medium text-text-muted italic">
+													{item.workItem}
+												</h4>
+											{/if}
+											{#if item.lastDate}
+												<span class="text-xs text-text-muted font-mono">({item.lastDate})</span>
+											{/if}
+										</div>
+										{#if parsed.summary}
+											<p class="mt-1 text-sm text-text-muted">{parsed.summary}</p>
 										{/if}
-										{#if item.description}
-											<p class="mt-1 text-sm text-text-muted">{item.description}</p>
+										{#if parsed.subItems.length > 0}
+											<ul class="mt-2 space-y-1.5">
+												{#each parsed.subItems as subItem}
+													<li class="text-sm">
+														<span class="text-primary/70 font-mono text-xs">{subItem.date}</span>
+														<span class="font-medium text-text ml-2">{subItem.title}</span>
+														{#if subItem.time}
+															<span class="text-primary/80 text-xs ml-1">({subItem.time})</span>
+														{/if}
+														<span class="text-text-muted ml-1">- {subItem.description}</span>
+													</li>
+												{/each}
+											</ul>
+										{/if}
+										{#if item.commits.length > 0}
+											<details class="mt-2 group/commits">
+												<summary class="text-xs text-text-muted cursor-pointer hover:text-primary">
+													{item.commits.length} 個 commits
+												</summary>
+												<ul class="mt-1 space-y-0.5 pl-2 border-l-2 border-border">
+													{#each item.commits as commit}
+														<li class="text-xs text-text-muted">
+															<code class="text-primary/60">{commit.hash.slice(0, 7)}</code>
+															<span class="ml-1">{commit.message ?? '(no message)'}</span>
+														</li>
+													{/each}
+												</ul>
+											</details>
 										{/if}
 									</div>
 									{#if item.workItemId}
