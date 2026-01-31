@@ -58,17 +58,156 @@ CLI tool for tracking Claude Code usage time per project. Integrates via hooks t
 
 When the user requests a time report, follow this workflow to produce a **human-readable, translated report**.
 
-### Step 1: Fetch Raw JSON Data
+### Step 0: Detect Current Project (Auto)
+
+**Unless the user explicitly specifies a project**, automatically detect the current Git project:
 
 ```bash
-claude-time-tracker report --format json [other options]
+git rev-parse --show-toplevel
 ```
 
-### Step 2: Transform Work Items
+Use the output path as the `project` parameter for MCP calls. This ensures reports are scoped to the current repository.
 
-For each `work_item` in the JSON output, perform two transformations:
+**Examples:**
+- User: "產生這個月報告" → Detect current project, filter by it
+- User: "產生 yourclinic 這個月報告" → Use "yourclinic" as project filter
+- User: "產生所有專案的報告" → Don't pass project filter (return all)
 
-#### 2a. Translate Work Item ID to Human-Readable Title
+---
+
+### Step 0.5: Verify Project Exists (If No Match)
+
+If `list_sessions` returns empty results or the detected path doesn't match any known project:
+
+1. **List available projects** to show the user:
+   ```
+   mcp__time-tracker__list_projects({})
+   ```
+
+2. **Ask user** which project to use with `AskUserQuestion`:
+   ```
+   找不到符合「{detected_path}」的專案。
+
+   選項：
+   1. 使用「{closest_match}」（最相似的專案）
+   2. 為此路徑設定新的顯示名稱
+   3. 顯示所有專案讓我選擇
+   ```
+
+3. **If user wants to set a display name**, call:
+   ```
+   mcp__time-tracker__update_project({
+     project_id: <id>,
+     display_name: "使用者提供的名稱"
+   })
+   ```
+
+This ensures proper project identification and allows users to configure display names for better recognition in future reports.
+
+---
+
+### Step 1: Fetch Session Data via MCP
+
+Use the `list_sessions` MCP tool to get all sessions (including main branch work):
+
+```
+mcp__time-tracker__list_sessions({
+  project: "<detected-project-path>",  // from Step 0, or user-specified
+  month: "2026-01",                    // optional, format: YYYY-MM
+  include_commits: true                // default: true
+})
+```
+
+**Response structure:**
+```json
+{
+  "sessions": [
+    {
+      "id": 1,
+      "project_id": 2,
+      "project_name": "YourClinic 診所管理系統",
+      "branch": "feature/ABC-123-login",
+      "work_item": "ABC-123",
+      "started_at": "2026-01-15T10:00:00Z",
+      "active_seconds": 3600,
+      "commits": [
+        {"hash": "abc123", "message": "feat: add login form"}
+      ]
+    },
+    {
+      "id": 2,
+      "project_id": 2,
+      "project_name": "YourClinic 診所管理系統",
+      "branch": "main",
+      "work_item": null,
+      "started_at": "2026-01-16T14:00:00Z",
+      "active_seconds": 5400,
+      "commits": [
+        {"hash": "def456", "message": "fix: typo in readme"},
+        {"hash": "ghi789", "message": "feat: add CSV export [Branch: feature/export]"}
+      ]
+    }
+  ],
+  "total_seconds": 9000
+}
+```
+
+### Step 2: Group Commits into Work Items
+
+**核心原則：每個獨立的工作都應該是一個獨立的工作項目。**
+
+#### 2a. Sessions with `work_item` (feature branches)
+
+直接使用 `work_item` 值作為工作項目 ID，例如 "ABC-123"。
+
+#### 2b. Sessions without `work_item` (main/master branch)
+
+對於 main/master branch 上的 commits，需要**逐一分析**：
+
+1. **檢查 `[Branch: xxx]` 標籤**：若 commit message 包含此標籤，歸類到該 branch
+2. **語意分析相關性**：
+   - 同一個功能的多個 commits → 合併成一個工作項目
+   - 不相關的 commits → **各自成為獨立的工作項目**
+3. **時間分配**：Session 時間按 commit 數量比例分配
+
+**判斷 commits 是否相關的標準：**
+- 相同的 scope（如 `fix(coupon): ...` 和 `test(coupon): ...`）
+- 明顯的因果關係（如 bug fix 後的 revert 再 fix）
+- 同一個 issue 的不同部分
+
+**不應該合併的情況：**
+- 不同功能模組的修改
+- 獨立的 bug fixes
+- 完全不相關的 chores
+
+**Example:**
+```
+輸入 commits:
+  1. "fix(views): refine contact page text"
+  2. "feat(security): improve rate limit config"
+  3. "fix(coupon): 修復限定商品優惠券無法折扣的問題"
+  4. "Revert fix(coupon)..."
+  5. "fix(coupon): 修復限定商品優惠券條件邏輯錯誤"
+  6. "test(order_price_calculator): 新增折扣計算邏輯的單元測試"
+
+分組結果:
+  - 工作項 1: "聯絡頁面文字優化" (commit 1)
+  - 工作項 2: "安全性速率限制改善" (commit 2)
+  - 工作項 3: "優惠券折扣邏輯修復" (commits 3, 4, 5 - 相關)
+  - 工作項 4: "折扣計算測試" (commit 6)
+
+時間分配 (假設 session 總共 6 小時):
+  - 工作項 1: 1h (1/6)
+  - 工作項 2: 1h (1/6)
+  - 工作項 3: 3h (3/6)
+  - 工作項 4: 1h (1/6)
+```
+
+### Step 3: Transform Work Items
+
+For each grouped work item, perform two transformations:
+
+#### 3a. Translate Work Item ID to Human-Readable Title
 
 Convert the technical `id` field (typically a kebab-case branch name fragment) into a descriptive title in **Traditional Chinese (Taiwan)**.
 
@@ -86,7 +225,7 @@ Convert the technical `id` field (typically a kebab-case branch name fragment) i
 - Preserve issue tracker IDs (e.g., `ABC-123`, `PROJ-456`) without translation
 - Use Taiwanese terminology (e.g., use 「使用者」 not 「用户」, 「資料」 not 「数据」)
 
-#### 2b. Summarize Commits into a Description
+#### 3b. Summarize Commits into a Description
 
 Synthesize all commit messages from the `commits` array into a **concise 1-2 sentence summary in Traditional Chinese (Taiwan)** that captures the work accomplished.
 
@@ -134,7 +273,7 @@ Synthesize all commit messages from the `commits` array into a **concise 1-2 sen
 - ❌ Generic summaries like 「各項改進」
 - ❌ Using Simplified Chinese or mainland terminology
 
-### Step 3: Save Translations (REQUIRED - DO NOT SKIP)
+### Step 4: Save Translations (REQUIRED - DO NOT SKIP)
 
 <CRITICAL>
 **THIS STEP IS MANDATORY.** You MUST call `mcp__time-tracker__create_work_item` for EVERY work item before outputting the report. Do NOT skip this step. Do NOT output the report until all work items have been saved.
@@ -147,26 +286,42 @@ Synthesize all commit messages from the `commits` array into a **concise 1-2 sen
 - `description`: The summarized Chinese description
 
 **Example - you MUST make these calls:**
+
+**範例 1：Feature branch 工作項目**
 ```
-// For EACH work item, call MCP:
 mcp__time-tracker__create_work_item({
   identifier: "invoice-enhancements",
   project: "yourclinic",
   title: "發票功能強化",
   description: "優化發票 PDF 版面與樣式、改用 LXGW WenKai 字型支援中日韓字元、新增管理員刪除發票功能"
 })
-
-mcp__time-tracker__create_work_item({
-  identifier: "pdf-prawn-migration",
-  project: "yourclinic",
-  title: "PDF 引擎遷移",
-  description: "將發票 PDF 產生器從 ferrum_pdf 遷移至 Prawn 引擎"
-})
-
-// ... repeat for ALL work items
 ```
 
-**Checklist before proceeding to Step 4:**
+**範例 2：Main branch 上的複合工作項目（含子項目）**
+
+當 main branch 有多個 commits 時，建立一個複合工作項目，並在描述中列出**帶日期的子項目**：
+
+```
+// 建立 identifier="master" 或 identifier="main" 的複合工作項目
+// identifier 必須與 session 的 branch 名稱相符，web app 才能正確顯示
+mcp__time-tracker__create_work_item({
+  identifier: "master",  // 或 "main"，取決於實際分支名稱
+  project: "landtop",
+  title: "一般維護與修復",
+  description: "2026/01/15 | 頁面文字優化 | 改善聯絡頁面與錯誤頁面的文字內容\n2026/01/20 | 安全性速率限制 | 改進速率限制設定並新增品牌化錯誤頁面\n2026/01/25 | 價格表格修復 | 修復價格表格在手機版無法滑動的問題\n2026/01/28 | 優惠券折扣修復 | 修復限定商品優惠券無法正確套用折扣的問題"
+})
+```
+
+**重要：** `identifier` 必須是 `master` 或 `main`（與 session 的 branch 欄位相符），這樣 web app 才能透過 `project_id:branch` 的方式找到對應的工作項目。
+
+**描述格式規範（子項目帶日期和時間）：**
+- 每行一個子項目
+- 格式：`YYYY/MM/DD | 子項目標題 | 時間 | 簡短說明`
+- 日期從 commit 的日期取得
+- 時間按 commit 數量比例分配（總時間 / commit 數量）
+- Web app 會解析這個格式並以清單方式顯示
+
+**Checklist before proceeding to Step 5:**
 - [ ] Called `create_work_item` for work item 1
 - [ ] Called `create_work_item` for work item 2
 - [ ] ... (all work items)
@@ -178,7 +333,7 @@ mcp__time-tracker__create_work_item({
 
 ---
 
-### Step 4: Output Formatted Report
+### Step 5: Output Formatted Report
 
 Generate the final report using this structure (all labels in Traditional Chinese):
 
@@ -194,12 +349,29 @@ Generate the final report using this structure (all labels in Traditional Chines
 
 **小計：** Xh Ym
 
-| 工作項 | 完成日期 | 時間 | 說明 |
-|--------|----------|------|------|
-| [翻譯後的標題] | YYYY-MM-DD | Xh Ym | [彙整後的中文摘要] |
+### [工作項目標題]
+- **日期：** YYYY-MM-DD
+- **時間：** Xh Ym
+- **說明：** [彙整後的中文摘要]
+
+### [複合工作項目標題]（含子項目）
+- **日期：** YYYY-MM-DD
+- **時間：** Xh Ym（總計）
+- **說明：** [彙整後的中文摘要]
+- **子項目：**
+  - 子工作 1 - 簡短說明
+  - 子工作 2 - 簡短說明
+  - 子工作 3 - 簡短說明
 ```
 
+**報告格式規則：**
+1. 每個工作項目都要顯示**日期**（完成日期或最後活動日期）
+2. 如果工作項目是由多個不相關的 commits 組成（main branch 雜項），需列出**子項目清單**
+3. Feature branch 的單一工作項目不需要子項目清單
+
 ### Complete Transformation Example
+
+**範例 1：Feature Branch 單一工作項目**
 
 **Raw JSON Input:**
 ```json
@@ -218,9 +390,53 @@ Generate the final report using this structure (all labels in Traditional Chines
 
 **Transformed Output:**
 
-| 工作項 | 完成日期 | 時間 | 說明 |
-|--------|----------|------|------|
-| 發票功能強化 | 2026-01-19 | 5h 0m | 優化發票 PDF 版面與樣式、改用 LXGW WenKai 字型以支援中日韓字元、新增管理員刪除發票功能 |
+### 發票功能強化
+- **日期：** 2026-01-19
+- **時間：** 5h 0m
+- **說明：** 優化發票 PDF 版面與樣式、改用 LXGW WenKai 字型以支援中日韓字元、新增管理員刪除發票功能
+
+---
+
+**範例 2：Main Branch 複合工作項目（含子項目及日期）**
+
+**Raw JSON Input:**
+```json
+{
+  "branch": "master",
+  "work_item": null,
+  "total_seconds": 19860,
+  "completed_date": "2026-01-28",
+  "commits": [
+    {"message": "fix(views): refine contact page text", "created_at": "2026-01-15T10:00:00Z"},
+    {"message": "feat(security): improve rate limit config", "created_at": "2026-01-20T14:00:00Z"},
+    {"message": "fix(mobile): 修復價格表格手機版無法滑動", "created_at": "2026-01-25T09:00:00Z"},
+    {"message": "fix(coupon): 修復限定商品優惠券無法折扣的問題", "created_at": "2026-01-28T16:00:00Z"}
+  ]
+}
+```
+
+**Transformed Output（Markdown 報告）：**
+
+### 一般維護與修復
+- **總時間：** 5h 32m
+- **子項目：**
+  - 2026/01/15 頁面文字優化 (1h 23m) - 改善聯絡頁面文字清晰度
+  - 2026/01/20 安全性速率限制 (1h 23m) - 改進速率限制設定
+  - 2026/01/25 價格表格修復 (1h 23m) - 修復手機版無法滑動的問題
+  - 2026/01/28 優惠券折扣修復 (1h 23m) - 修復限定商品優惠券無法正確折扣
+
+**Web App 儲存格式（description 欄位）：**
+```
+2026/01/15 | 頁面文字優化 | 1h 23m | 改善聯絡頁面文字清晰度
+2026/01/20 | 安全性速率限制 | 1h 23m | 改進速率限制設定
+2026/01/25 | 價格表格修復 | 1h 23m | 修復手機版無法滑動的問題
+2026/01/28 | 優惠券折扣修復 | 1h 23m | 修復限定商品優惠券無法正確折扣
+```
+
+**時間分配計算：**
+- 取得 session 的 `active_seconds` 總時間
+- 按 commit 數量等比例分配給每個子項目
+- 例如：4 個 commits 共 5h 32m → 每個約 1h 23m
 
 ---
 
