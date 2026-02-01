@@ -4,7 +4,9 @@ import {
 	getSessionsInMonth,
 	getCommitsBySessionIds,
 	getWorkItemsByProjectIds,
+	getCompletedWorkItemsInMonth,
 	updateWorkItem,
+	createWorkItem,
 	db
 } from '$lib/server/db';
 import { calculateBillableHours, calculateBillableSeconds } from '$lib/billable';
@@ -99,6 +101,7 @@ export const load: PageServerLoad = async ({ params }) => {
 			title: string | null;
 			description: string | null;
 			completedDate: string | null;
+			billableHoursOverride: number | null; // Manual override from database
 			sessions: SessionWithDetails[];
 			totalSeconds: number;
 			billableHours: number;
@@ -122,6 +125,7 @@ export const load: PageServerLoad = async ({ params }) => {
 			title: dbWorkItem?.title ?? null,
 			description: dbWorkItem?.description ?? null,
 			completedDate: dbWorkItem?.completed_date ?? null,
+			billableHoursOverride: dbWorkItem?.billable_hours ?? null,
 			sessions: [],
 			totalSeconds: 0,
 			billableHours: 0,
@@ -178,12 +182,13 @@ export const load: PageServerLoad = async ({ params }) => {
 		.filter((item) => item.totalSeconds >= MIN_DISPLAY_SECONDS)
 		.map((item) => ({
 			...item,
-			billableHours: calculateBillableHours(item.totalSeconds),
+			// Use manual override if set, otherwise calculate
+			billableHours: item.billableHoursOverride ?? calculateBillableHours(item.totalSeconds),
 			sessionCount: item.sessions.length
 		}));
 
 	// Split into completed (has title AND completed_date) vs tracking
-	const completedWorkItems = allWorkItems
+	const sessionBasedCompleted = allWorkItems
 		.filter((item) => item.title && item.completedDate)
 		.sort((a, b) => {
 			// Sort by completed date descending
@@ -196,6 +201,40 @@ export const load: PageServerLoad = async ({ params }) => {
 	const trackingWorkItems = allWorkItems
 		.filter((item) => !item.title || !item.completedDate)
 		.sort((a, b) => b.totalSeconds - a.totalSeconds);
+
+	// Get standalone work items (completed in this month but not tied to sessions)
+	const standaloneWorkItems = await getCompletedWorkItemsInMonth(projectIds, year, month);
+	// Filter out items already shown from session grouping
+	const sessionWorkItemIds = new Set(allWorkItems.map((item) => item.workItemId).filter(Boolean));
+	const standaloneCompleted = standaloneWorkItems
+		.filter((wi) => !sessionWorkItemIds.has(wi.id))
+		.map((wi) => ({
+			branch: wi.identifier,
+			workItem: wi.identifier,
+			workItemId: wi.id,
+			title: wi.title,
+			description: wi.description,
+			completedDate: wi.completed_date,
+			billableHoursOverride: wi.billable_hours,
+			sessions: [] as SessionWithDetails[],
+			totalSeconds: 0,
+			billableHours: wi.billable_hours ?? 0, // Standalone items must have explicit hours
+			commits: [] as Commit[],
+			lastDate: wi.completed_date,
+			sessionCount: 0,
+			isStandalone: true
+		}));
+
+	// Merge session-based and standalone completed items
+	const completedWorkItems = [
+		...sessionBasedCompleted.map((item) => ({ ...item, isStandalone: false })),
+		...standaloneCompleted
+	].sort((a, b) => {
+		if (a.completedDate && b.completedDate) {
+			return b.completedDate.localeCompare(a.completedDate);
+		}
+		return (b.billableHours ?? 0) - (a.billableHours ?? 0);
+	});
 
 	// Calculate billable total only from completed items
 	const completedBillableHours = completedWorkItems.reduce((sum, item) => sum + item.billableHours, 0);
@@ -234,15 +273,28 @@ export const actions: Actions = {
 		const id = Number(formData.get('id'));
 		const title = formData.get('title') as string | null;
 		const description = formData.get('description') as string | null;
+		const completedDate = formData.get('completed_date') as string | null;
+		const billableHoursStr = formData.get('billable_hours') as string | null;
 
 		if (!id || isNaN(id)) {
 			return fail(400, { error: '無效的工作項 ID' });
 		}
 
+		// Parse billable_hours if provided
+		let billableHours: number | null = null;
+		if (billableHoursStr && billableHoursStr.trim() !== '') {
+			billableHours = parseFloat(billableHoursStr);
+			if (isNaN(billableHours) || billableHours < 0) {
+				return fail(400, { error: '計費工時格式錯誤' });
+			}
+		}
+
 		try {
 			const updated = await updateWorkItem(id, {
 				title: title || null,
-				description: description || null
+				description: description || null,
+				completed_date: completedDate || null,
+				billable_hours: billableHours
 			});
 
 			if (!updated) {
@@ -253,6 +305,49 @@ export const actions: Actions = {
 		} catch (e) {
 			console.error('Failed to update work item:', e);
 			return fail(500, { error: '更新失敗' });
+		}
+	},
+
+	createWorkItem: async ({ request, params }) => {
+		const formData = await request.formData();
+		const projectId = Number(formData.get('project_id'));
+		const title = formData.get('title') as string | null;
+		const description = formData.get('description') as string | null;
+		const completedDate = formData.get('completed_date') as string | null;
+		const billableHoursStr = formData.get('billable_hours') as string | null;
+
+		if (!projectId || isNaN(projectId)) {
+			return fail(400, { error: '請選擇專案' });
+		}
+
+		if (!title || title.trim() === '') {
+			return fail(400, { error: '請輸入工作項目名稱' });
+		}
+
+		// Parse billable_hours
+		let billableHours: number | null = null;
+		if (billableHoursStr && billableHoursStr.trim() !== '') {
+			billableHours = parseFloat(billableHoursStr);
+			if (isNaN(billableHours) || billableHours < 0) {
+				return fail(400, { error: '計費工時格式錯誤' });
+			}
+		}
+
+		// Generate unique identifier for standalone work item
+		const identifier = `standalone-${Date.now()}`;
+
+		try {
+			const created = await createWorkItem(projectId, identifier, {
+				title: title.trim(),
+				description: description?.trim() || null,
+				completed_date: completedDate || null,
+				billable_hours: billableHours
+			});
+
+			return { success: true, workItem: created };
+		} catch (e) {
+			console.error('Failed to create work item:', e);
+			return fail(500, { error: '建立失敗' });
 		}
 	}
 };

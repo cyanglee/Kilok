@@ -50,13 +50,36 @@
 	let editingWorkItemId: number | null = $state(null);
 	let editTitle = $state('');
 	let editDescription = $state('');
+	let editCompletedDate = $state('');
+	let editBillableHours = $state('');
 	let isSaving = $state(false);
+
+	// State for creating new work item
+	let showAddForm = $state(false);
+	let newProjectId = $state('');
+	let newTitle = $state('');
+	let newDescription = $state('');
+	let newCompletedDate = $state('');
+	let newBillableHours = $state('');
+	let isCreating = $state(false);
 
 	function startEditing(item: (typeof data.completedWorkItems)[0] | (typeof data.trackingWorkItems)[0]) {
 		if (!item.workItemId) return;
 		editingWorkItemId = item.workItemId;
 		editTitle = item.title ?? '';
 		editDescription = item.description ?? '';
+		editCompletedDate = item.completedDate ?? '';
+		// Use billableHoursOverride if set, otherwise show the calculated value
+		editBillableHours = item.billableHoursOverride?.toString() ?? item.billableHours.toString();
+	}
+
+	function resetAddForm() {
+		showAddForm = false;
+		newProjectId = data.projects[0]?.id?.toString() ?? '';
+		newTitle = '';
+		newDescription = '';
+		newCompletedDate = '';
+		newBillableHours = '';
 	}
 
 	// Parse description for sub-items with dates and time
@@ -111,6 +134,8 @@
 		editingWorkItemId = null;
 		editTitle = '';
 		editDescription = '';
+		editCompletedDate = '';
+		editBillableHours = '';
 	}
 </script>
 
@@ -165,11 +190,123 @@
 </div>
 
 <!-- Completed Work Items Table - 已完成報告 -->
-{#if data.completedWorkItems.length > 0}
-	<div class="mb-8 overflow-hidden rounded-xl border border-border bg-surface shadow-sm">
-		<div class="border-b border-border bg-background/50 px-6 py-3">
-			<h2 class="text-sm font-semibold text-text">已完成報告</h2>
-		</div>
+<div class="mb-8 overflow-hidden rounded-xl border border-border bg-surface shadow-sm">
+	<div class="border-b border-border bg-background/50 px-6 py-3 flex items-center justify-between">
+		<h2 class="text-sm font-semibold text-text">已完成報告</h2>
+		<button
+			type="button"
+			onclick={() => {
+				showAddForm = !showAddForm;
+				if (showAddForm) {
+					newProjectId = data.projects[0]?.id?.toString() ?? '';
+					// Default to today's date
+					const today = new Date().toISOString().slice(0, 10);
+					newCompletedDate = today;
+				}
+			}}
+			class="text-xs text-primary hover:text-primary/80 transition-colors"
+		>
+			{showAddForm ? '取消' : '+ 新增工作項目'}
+		</button>
+	</div>
+
+	<!-- Add Work Item Form -->
+	{#if showAddForm}
+		<form
+			method="POST"
+			action="?/createWorkItem"
+			use:enhance={() => {
+				isCreating = true;
+				return async ({ result, update }) => {
+					isCreating = false;
+					if (result.type === 'success') {
+						resetAddForm();
+					}
+					await update();
+				};
+			}}
+			class="border-b border-border bg-background/20 px-6 py-4 space-y-3"
+		>
+			<div class="grid grid-cols-3 gap-3">
+				<div>
+					<label for="new-project" class="block text-xs text-text-muted mb-1">專案</label>
+					<select
+						id="new-project"
+						name="project_id"
+						bind:value={newProjectId}
+						class="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-text focus:border-primary focus:outline-none"
+					>
+						{#each data.projects as project}
+							<option value={project.id}>{project.display_name ?? project.path}</option>
+						{/each}
+					</select>
+				</div>
+				<div>
+					<label for="new-completed-date" class="block text-xs text-text-muted mb-1">完成日期</label>
+					<input
+						id="new-completed-date"
+						type="date"
+						name="completed_date"
+						bind:value={newCompletedDate}
+						class="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-text focus:border-primary focus:outline-none"
+					/>
+				</div>
+				<div>
+					<label for="new-billable-hours" class="block text-xs text-text-muted mb-1">計費工時</label>
+					<input
+						id="new-billable-hours"
+						type="number"
+						name="billable_hours"
+						step="0.5"
+						min="0"
+						bind:value={newBillableHours}
+						placeholder="例如：3.5"
+						class="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-text focus:border-primary focus:outline-none"
+					/>
+				</div>
+			</div>
+			<div>
+				<label for="new-title" class="block text-xs text-text-muted mb-1">工作項目名稱</label>
+				<input
+					id="new-title"
+					type="text"
+					name="title"
+					placeholder="例如：頁面文字優化"
+					bind:value={newTitle}
+					class="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-text placeholder:text-text-muted focus:border-primary focus:outline-none"
+				/>
+			</div>
+			<div>
+				<label for="new-description" class="block text-xs text-text-muted mb-1">工作內容說明（選填）</label>
+				<textarea
+					id="new-description"
+					name="description"
+					placeholder="工作內容詳細說明"
+					bind:value={newDescription}
+					rows="2"
+					class="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-text placeholder:text-text-muted focus:border-primary focus:outline-none"
+				></textarea>
+			</div>
+			<div class="flex gap-2">
+				<button
+					type="submit"
+					disabled={isCreating || !newTitle.trim()}
+					class="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-primary/90 disabled:opacity-50"
+				>
+					{isCreating ? '建立中...' : '建立工作項目'}
+				</button>
+				<button
+					type="button"
+					onclick={resetAddForm}
+					class="rounded-lg border border-border px-4 py-2 text-sm font-medium text-text-muted transition-colors hover:bg-border"
+				>
+					取消
+				</button>
+			</div>
+		</form>
+	{/if}
+
+	{#if data.completedWorkItems.length > 0}
 		<table class="w-full">
 			<thead>
 				<tr class="border-b border-border bg-background/30">
@@ -200,9 +337,34 @@
 											await update();
 										};
 									}}
-									class="space-y-2"
+									class="space-y-3"
 								>
 									<input type="hidden" name="id" value={item.workItemId} />
+									<div class="grid grid-cols-2 gap-3">
+										<div>
+											<label for="edit-completed-date" class="block text-xs text-text-muted mb-1">完成日期</label>
+											<input
+												id="edit-completed-date"
+												type="date"
+												name="completed_date"
+												bind:value={editCompletedDate}
+												class="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-text focus:border-primary focus:outline-none"
+											/>
+										</div>
+										<div>
+											<label for="edit-billable-hours" class="block text-xs text-text-muted mb-1">計費工時</label>
+											<input
+												id="edit-billable-hours"
+												type="number"
+												name="billable_hours"
+												step="0.5"
+												min="0"
+												bind:value={editBillableHours}
+												placeholder="例如：3.5"
+												class="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-text focus:border-primary focus:outline-none"
+											/>
+										</div>
+									</div>
 									<input
 										type="text"
 										name="title"
@@ -285,8 +447,13 @@
 				</tr>
 			</tfoot>
 		</table>
-	</div>
-{/if}
+	{:else if !showAddForm}
+		<!-- Empty state when no completed items and not adding -->
+		<div class="px-6 py-8 text-center text-text-muted text-sm">
+			尚無已完成報告。點擊「+ 新增工作項目」來建立第一個。
+		</div>
+	{/if}
+</div>
 
 <!-- Tracking Work Items Table - 追蹤中 (Admin only) -->
 {#if data.trackingWorkItems.length > 0}
@@ -328,10 +495,10 @@
 								<div class="text-xs text-text-muted mt-1">{item.title}</div>
 							{/if}
 						</td>
-						<td class="px-6 py-3 text-right">
+						<td class="px-6 py-3 text-right whitespace-nowrap">
 							<span class="text-sm text-text-muted">{formatSeconds(item.totalSeconds)}</span>
 						</td>
-						<td class="px-6 py-3 text-right">
+						<td class="px-6 py-3 text-right whitespace-nowrap">
 							<span class="text-sm text-text-muted">{item.sessionCount}</span>
 						</td>
 					</tr>
@@ -341,8 +508,8 @@
 	</div>
 {/if}
 
-<!-- Empty State -->
-{#if data.completedWorkItems.length === 0 && data.trackingWorkItems.length === 0}
+<!-- Empty State (only show when no tracking items and no form open) -->
+{#if data.trackingWorkItems.length === 0 && data.completedWorkItems.length === 0 && !showAddForm}
 	<div class="rounded-xl border border-border bg-surface p-12 text-center shadow-sm">
 		<svg class="mx-auto h-12 w-12 text-text-muted opacity-50" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
 			<rect x="3" y="4" width="18" height="18" rx="2" />

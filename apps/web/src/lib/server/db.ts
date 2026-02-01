@@ -44,6 +44,12 @@ async function ensureSchema() {
 	} catch (e) {
 		console.error('Failed to generate tokens for existing clients:', e);
 	}
+	try {
+		// Add billable_hours column to work_items (nullable override for calculated value)
+		await db.execute('ALTER TABLE work_items ADD COLUMN billable_hours REAL');
+	} catch {
+		// Column already exists, ignore
+	}
 	schemaInitialized = true;
 }
 
@@ -109,6 +115,7 @@ export interface WorkItem {
 	description: string | null;
 	time_adjustment_seconds: number;
 	completed_date: string | null;
+	billable_hours: number | null; // Override for calculated billable hours
 	created_at: string;
 	updated_at: string | null;
 }
@@ -412,9 +419,63 @@ export async function getWorkItemByIdentifier(
 	return (result.rows[0] as unknown as WorkItem) ?? null;
 }
 
+export async function getCompletedWorkItemsInMonth(
+	projectIds: number[],
+	year: number,
+	month: number
+): Promise<WorkItem[]> {
+	if (projectIds.length === 0) return [];
+
+	const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
+	const endMonth = month === 12 ? 1 : month + 1;
+	const endYear = month === 12 ? year + 1 : year;
+	const endDate = `${endYear}-${String(endMonth).padStart(2, '0')}-01`;
+
+	const placeholders = projectIds.map(() => '?').join(',');
+	const result = await db.execute({
+		sql: `SELECT * FROM work_items
+			  WHERE project_id IN (${placeholders})
+			  AND completed_date >= ? AND completed_date < ?
+			  AND title IS NOT NULL
+			  ORDER BY completed_date DESC`,
+		args: [...projectIds, startDate, endDate]
+	});
+	return result.rows as unknown as WorkItem[];
+}
+
+export async function createWorkItem(
+	projectId: number,
+	identifier: string,
+	data: {
+		title: string;
+		description?: string | null;
+		completed_date?: string | null;
+		billable_hours?: number | null;
+	}
+): Promise<WorkItem> {
+	const result = await db.execute({
+		sql: `INSERT INTO work_items (project_id, identifier, title, description, completed_date, billable_hours, time_adjustment_seconds)
+			  VALUES (?, ?, ?, ?, ?, ?, 0) RETURNING *`,
+		args: [
+			projectId,
+			identifier,
+			data.title,
+			data.description ?? null,
+			data.completed_date ?? null,
+			data.billable_hours ?? null
+		]
+	});
+	return result.rows[0] as unknown as WorkItem;
+}
+
 export async function updateWorkItem(
 	id: number,
-	updates: { title?: string | null; description?: string | null }
+	updates: {
+		title?: string | null;
+		description?: string | null;
+		completed_date?: string | null;
+		billable_hours?: number | null;
+	}
 ): Promise<WorkItem | null> {
 	const setClauses: string[] = ['updated_at = datetime("now")'];
 	const args: (string | number | null)[] = [];
@@ -427,6 +488,16 @@ export async function updateWorkItem(
 	if (updates.description !== undefined) {
 		setClauses.push('description = ?');
 		args.push(updates.description);
+	}
+
+	if (updates.completed_date !== undefined) {
+		setClauses.push('completed_date = ?');
+		args.push(updates.completed_date);
+	}
+
+	if (updates.billable_hours !== undefined) {
+		setClauses.push('billable_hours = ?');
+		args.push(updates.billable_hours);
 	}
 
 	args.push(id);
