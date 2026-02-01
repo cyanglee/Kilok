@@ -172,21 +172,31 @@
 	</div>
 </div>
 
-<!-- Stats Card - 顯示計費工時 -->
-<div class="mb-8">
-	<div
-		class="inline-flex items-center gap-4 rounded-xl border border-border bg-surface px-6 py-4 shadow-sm"
-	>
-		<div>
-			<div class="text-sm font-medium text-text-muted">本月計費工時</div>
-			<div class="text-3xl font-bold text-primary">{formatBillableHours(data.completedBillableHours)}</div>
-		</div>
-		<div class="h-8 w-px bg-border"></div>
-		<div>
-			<div class="text-xs text-text-muted">原始</div>
-			<div class="text-lg text-text-muted">{formatHours(data.totalHours)}</div>
-		</div>
+<!-- Stats Cards -->
+<div class="mb-8 flex flex-wrap gap-4">
+	<!-- 本月計費工時 -->
+	<div class="rounded-xl border border-border bg-surface px-6 py-4 shadow-sm">
+		<div class="text-sm font-medium text-text-muted">本月計費工時</div>
+		<div class="text-3xl font-bold text-primary">{formatBillableHours(data.completedBillableHours)}</div>
+		<div class="mt-1 text-xs text-text-muted">原始 {formatHours(data.totalHours)}</div>
 	</div>
+
+	<!-- 本月額度（僅在有月額度時顯示）-->
+	{#if data.monthlyHours > 0}
+		<div class="rounded-xl border border-border bg-surface px-6 py-4 shadow-sm">
+			<div class="text-sm font-medium text-text-muted">本月額度</div>
+			<div class="text-3xl font-bold text-secondary">{formatHours(data.monthlyHours)}</div>
+			{#if data.completedBillableHours <= data.monthlyHours}
+				<div class="mt-1 text-xs text-success">
+					剩餘 {formatHours(data.monthlyHours - data.completedBillableHours)}
+				</div>
+			{:else}
+				<div class="mt-1 text-xs text-warning">
+					超額 {formatHours(data.completedBillableHours - data.monthlyHours)}
+				</div>
+			{/if}
+		</div>
+	{/if}
 </div>
 
 <!-- Completed Work Items Table - 已完成報告 -->

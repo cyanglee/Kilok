@@ -4,7 +4,8 @@ import {
 	getSessionsInMonth,
 	getCommitsBySessionIds,
 	getWorkItemsByProjectIds,
-	getCompletedWorkItemsInMonth
+	getCompletedWorkItemsInMonth,
+	getContractByClientAndYear
 } from '$lib/server/db';
 import { calculateBillableHours } from '$lib/billable';
 import { error } from '@sveltejs/kit';
@@ -153,6 +154,19 @@ export const load: PageServerLoad = async ({ params }) => {
 
 	const completedBillableHours = completedWorkItems.reduce((sum, item) => sum + item.billableHours, 0);
 
+	// Get contract info for monthly quota display
+	const contract = await getContractByClientAndYear(client.id, year);
+	const monthlyHours = contract?.monthly_hours ?? 0;
+	const carriedOver = contract?.carried_over ?? 0;
+
+	// Calculate monthly quota (including rollover from previous months)
+	let monthlyQuota = 0;
+	if (monthlyHours > 0) {
+		// This month's available quota = carried_over + (month × monthly_hours) - previous months' usage
+		// For simplicity, we just show the base monthly quota
+		monthlyQuota = monthlyHours;
+	}
+
 	// Calculate prev/next month periods
 	const prevMonth = month === 1 ? 12 : month - 1;
 	const prevYear = month === 1 ? year - 1 : year;
@@ -168,6 +182,9 @@ export const load: PageServerLoad = async ({ params }) => {
 		completedBillableHours,
 		completedWorkItems,
 		prevPeriod: `${prevYear}-${String(prevMonth).padStart(2, '0')}`,
-		nextPeriod: `${nextYear}-${String(nextMonth).padStart(2, '0')}`
+		nextPeriod: `${nextYear}-${String(nextMonth).padStart(2, '0')}`,
+		// Monthly quota info
+		monthlyHours,
+		monthlyQuota
 	};
 };

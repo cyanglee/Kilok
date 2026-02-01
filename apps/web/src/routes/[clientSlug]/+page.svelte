@@ -50,32 +50,9 @@
 
 <!-- Bento Grid: Stats Cards -->
 {#if data.monthlyHours > 0}
-	<!-- 月額度模式：顯示月度相關統計 -->
-	<div class="mb-8 grid grid-cols-2 gap-4 md:grid-cols-4 lg:grid-cols-5">
-		<!-- 當月額度 -->
-		<div
-			class="rounded-xl border border-border bg-surface p-5 shadow-sm transition-shadow hover:shadow-md"
-		>
-			<div class="text-xs font-medium text-text-muted">當月額度</div>
-			<div class="mt-1 text-2xl font-bold text-secondary">
-				{formatHours(data.monthlyHours)}
-			</div>
-		</div>
-
-		<!-- 當月已使用 -->
-		<div
-			class="rounded-xl border border-border bg-surface p-5 shadow-sm transition-shadow hover:shadow-md"
-		>
-			<div class="text-xs font-medium text-text-muted">本月已使用</div>
-			<div class="mt-1 text-2xl font-bold text-primary">
-				{formatHours(data.currentMonthHours)}
-			</div>
-			<div class="mt-1 text-xs text-text-muted">
-				{data.monthlyUsagePercent.toFixed(0)}% 月額度
-			</div>
-		</div>
-
-		<!-- 累積可用額度 -->
+	<!-- 月額度模式：精簡顯示 -->
+	<div class="mb-8 flex flex-wrap gap-4">
+		<!-- 累積可用額度（最重要的資訊）-->
 		<div
 			class="rounded-xl border-2 border-primary/30 bg-primary/5 p-5 shadow-sm transition-shadow hover:shadow-md"
 		>
@@ -92,18 +69,7 @@
 			</div>
 		</div>
 
-		<!-- 年度累計 -->
-		<div
-			class="rounded-xl border border-border bg-surface p-5 shadow-sm transition-shadow hover:shadow-md"
-		>
-			<div class="text-xs font-medium text-text-muted">年度累計</div>
-			<div class="mt-1 text-2xl font-bold text-text">{formatHours(data.yearlyHours)}</div>
-			<div class="mt-1 text-xs text-text-muted">
-				/ {formatHours(data.accumulatedQuota)} 可用
-			</div>
-		</div>
-
-		<!-- 結轉時數 -->
+		<!-- 結轉時數（僅在 > 0 時顯示）-->
 		{#if data.carriedOver > 0}
 			<div
 				class="rounded-xl border border-border bg-surface p-5 shadow-sm transition-shadow hover:shadow-md"
@@ -166,82 +132,43 @@
 
 <!-- Usage Progress -->
 {#if data.monthlyHours > 0}
-	<!-- 月額度模式進度條 -->
-	<div class="mb-8 space-y-4">
-		<!-- 當月額度進度 -->
-		<div class="rounded-xl border border-border bg-surface p-6 shadow-sm">
+	<!-- 月額度模式：只顯示年度進度條 -->
+	{#if data.yearlyQuota > 0}
+		{@const yearlyPercent = data.yearlyQuota > 0 ? (data.yearlyHours / data.yearlyQuota) * 100 : 0}
+		<div class="mb-8 rounded-xl border border-border bg-surface p-6 shadow-sm">
 			<div class="mb-2 flex justify-between">
-				<span class="text-sm font-medium text-text">本月額度使用進度</span>
+				<span class="text-sm font-medium text-text">年度額度使用進度</span>
 				<span
-					class="text-sm font-bold {data.monthlyUsagePercent > 100
+					class="text-sm font-bold {yearlyPercent > 90
 						? 'text-danger'
-						: data.monthlyUsagePercent > 80
+						: yearlyPercent > 70
 							? 'text-warning'
 							: 'text-text'}"
 				>
-					{data.monthlyUsagePercent.toFixed(1)}%
+					{yearlyPercent.toFixed(1)}%
 				</span>
 			</div>
 			<div class="h-3 overflow-hidden rounded-full bg-border">
 				<div
-					class="h-full rounded-full transition-all {data.monthlyUsagePercent > 100
+					class="h-full rounded-full transition-all {yearlyPercent > 90
 						? 'bg-danger'
-						: data.monthlyUsagePercent > 80
+						: yearlyPercent > 70
 							? 'bg-warning'
 							: 'bg-primary'}"
-					style="width: {Math.min(100, data.monthlyUsagePercent)}%"
-				></div>
-			</div>
-			<div class="mt-2 flex justify-between text-xs text-text-muted">
-				<span>{formatHours(data.currentMonthHours)} / {formatHours(data.monthlyHours)} 月額度</span>
-				<span>
-					{#if data.monthlyUsagePercent > 100}
-						超額 {formatHours(data.currentMonthHours - data.monthlyHours)}
-					{:else}
-						剩餘 {formatHours(data.monthlyHours - data.currentMonthHours)}
-					{/if}
-				</span>
-			</div>
-		</div>
-
-		<!-- 累積額度進度 -->
-		{#if true}
-			{@const accumulatedPercent = data.accumulatedQuota > 0 ? (data.yearlyHours / data.accumulatedQuota) * 100 : 0}
-			<div class="rounded-xl border border-border bg-surface p-6 shadow-sm">
-			<div class="mb-2 flex justify-between">
-				<span class="text-sm font-medium text-text">累積額度使用進度</span>
-				<span
-					class="text-sm font-bold {accumulatedPercent > 90
-						? 'text-danger'
-						: accumulatedPercent > 70
-							? 'text-warning'
-							: 'text-text'}"
-				>
-					{accumulatedPercent.toFixed(1)}%
-				</span>
-			</div>
-			<div class="h-3 overflow-hidden rounded-full bg-border">
-				<div
-					class="h-full rounded-full transition-all {accumulatedPercent > 90
-						? 'bg-danger'
-						: accumulatedPercent > 70
-							? 'bg-warning'
-							: 'bg-primary'}"
-					style="width: {Math.min(100, accumulatedPercent)}%"
+					style="width: {Math.min(100, yearlyPercent)}%"
 				></div>
 			</div>
 			<div class="mt-2 flex justify-between text-xs text-text-muted">
 				<span>
-					{formatHours(data.yearlyHours)} / {formatHours(data.accumulatedQuota)}
+					{formatHours(data.yearlyHours)} / {formatHours(data.yearlyQuota)}
 					<span class="text-text-muted/60">
-						({data.currentMonth}月 × {formatHours(data.monthlyHours)}{#if data.carriedOver > 0} + {formatHours(data.carriedOver)} 結轉{/if})
+						(12月 × {formatHours(data.monthlyHours)}{#if data.carriedOver > 0} + {formatHours(data.carriedOver)} 結轉{/if})
 					</span>
 				</span>
 				<span>{data.yearlySessions} 個工作階段</span>
 			</div>
-			</div>
-		{/if}
-	</div>
+		</div>
+	{/if}
 {:else if data.contractHours > 0}
 	<!-- 年度額度模式進度條 -->
 	<div class="mb-8 rounded-xl border border-border bg-surface p-6 shadow-sm">

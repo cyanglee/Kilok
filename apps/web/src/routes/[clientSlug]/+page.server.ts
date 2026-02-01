@@ -84,6 +84,9 @@ export const load: PageServerLoad = async ({ params }) => {
 	const currentMonth = new Date().getMonth() + 1; // 1-12
 	const currentMonthHours = monthlyStats[currentMonth - 1]?.hours ?? 0;
 
+	// 年度總額度 = (12 × 月額度) + 結轉
+	const yearlyQuota = monthlyHours > 0 ? 12 * monthlyHours + carriedOver : contractHours;
+
 	// 到當月為止的累積總額度 = (當前月份 × 月額度) + 結轉
 	const accumulatedQuota = monthlyHours > 0 ? currentMonth * monthlyHours + carriedOver : 0;
 
@@ -95,8 +98,8 @@ export const load: PageServerLoad = async ({ params }) => {
 		monthlyHours > 0 ? (currentMonthHours / monthlyHours) * 100 : 0;
 
 	// 年度額度使用率
-	const remainingHours = Math.max(0, contractHours - yearlyHours);
-	const usagePercent = contractHours > 0 ? (yearlyHours / contractHours) * 100 : 0;
+	const remainingHours = Math.max(0, yearlyQuota - yearlyHours);
+	const usagePercent = yearlyQuota > 0 ? (yearlyHours / yearlyQuota) * 100 : 0;
 
 	// Filter to only months with data for the report list
 	const monthsWithData = monthlyStats.filter((m) => m.hours > 0 || m.sessions > 0);
@@ -118,6 +121,7 @@ export const load: PageServerLoad = async ({ params }) => {
 		carriedOver,
 		currentMonth,
 		currentMonthHours,
+		yearlyQuota,
 		accumulatedQuota,
 		availableQuota,
 		monthlyUsagePercent

@@ -40,31 +40,27 @@ export const load: PageServerLoad = async ({ params }) => {
 		const sessions = await getSessionsInMonth(projectIds, year, month);
 		const totalSeconds = sessions.reduce((sum, s) => sum + (s.active_seconds ?? 0), 0);
 
-		// Get billable hours from completed work items
+		// Get billable hours from completed work items only
+		// Client-facing share page should only show completed/reported items
 		const completedWorkItems = await getCompletedWorkItemsInMonth(projectIds, year, month);
 		const workItemBillableHours = completedWorkItems.reduce(
 			(sum, wi) => sum + (wi.billable_hours ?? 0),
 			0
 		);
 
-		// Also count session-based completed work items billable hours
-		// For simplicity, use work item billable hours if available, otherwise calculate
-		const billableHours = workItemBillableHours > 0
-			? workItemBillableHours
-			: calculateBillableHours(totalSeconds);
-
-		if (totalSeconds > 0 || workItemBillableHours > 0) {
+		// Only show months with completed work items on client share page
+		if (workItemBillableHours > 0) {
 			monthlyStats.push({
 				period,
 				year,
 				month,
 				hours: totalSeconds / 3600,
-				billableHours
+				billableHours: workItemBillableHours
 			});
 
 			// Sum up yearly billable hours
 			if (year === currentYear) {
-				yearlyBillableHours += billableHours;
+				yearlyBillableHours += workItemBillableHours;
 			}
 		}
 	}

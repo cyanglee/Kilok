@@ -5,6 +5,7 @@ import {
 	getCommitsBySessionIds,
 	getWorkItemsByProjectIds,
 	getCompletedWorkItemsInMonth,
+	getContractByClientAndYear,
 	updateWorkItem,
 	createWorkItem,
 	db
@@ -239,6 +240,10 @@ export const load: PageServerLoad = async ({ params }) => {
 	// Calculate billable total only from completed items
 	const completedBillableHours = completedWorkItems.reduce((sum, item) => sum + item.billableHours, 0);
 
+	// Get contract info for monthly quota display
+	const contract = await getContractByClientAndYear(client.id, year);
+	const monthlyHours = contract?.monthly_hours ?? 0;
+
 	// Calculate prev/next month periods
 	const prevMonth = month === 1 ? 12 : month - 1;
 	const prevYear = month === 1 ? year - 1 : year;
@@ -263,7 +268,9 @@ export const load: PageServerLoad = async ({ params }) => {
 		dailyStats: dailyStatsList,
 		// Month navigation
 		prevPeriod: `${prevYear}-${String(prevMonth).padStart(2, '0')}`,
-		nextPeriod: `${nextYear}-${String(nextMonth).padStart(2, '0')}`
+		nextPeriod: `${nextYear}-${String(nextMonth).padStart(2, '0')}`,
+		// Monthly quota info
+		monthlyHours
 	};
 };
 
