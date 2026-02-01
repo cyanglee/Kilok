@@ -3,7 +3,8 @@ import {
 	getProjectsByClientId,
 	getSessionsInMonth,
 	getCommitsBySessionIds,
-	getWorkItemsByProjectIds
+	getWorkItemsByProjectIds,
+	getCompletedWorkItemsInMonth
 } from '$lib/server/db';
 import { calculateBillableHours } from '$lib/billable';
 import { error } from '@sveltejs/kit';
@@ -79,6 +80,7 @@ export const load: PageServerLoad = async ({ params }) => {
 			title: string | null;
 			description: string | null;
 			completedDate: string | null;
+			billableHoursOverride: number | null;
 			sessions: SessionWithDetails[];
 			totalSeconds: number;
 			billableHours: number;
@@ -98,6 +100,7 @@ export const load: PageServerLoad = async ({ params }) => {
 			title: dbWorkItem?.title ?? null,
 			description: dbWorkItem?.description ?? null,
 			completedDate: dbWorkItem?.completed_date ?? null,
+			billableHoursOverride: dbWorkItem?.billable_hours ?? null,
 			sessions: [],
 			totalSeconds: 0,
 			billableHours: 0
@@ -110,20 +113,43 @@ export const load: PageServerLoad = async ({ params }) => {
 	// Minimum display threshold: 5 minutes (300 seconds)
 	const MIN_DISPLAY_SECONDS = 300;
 
-	// Filter and calculate billable hours - ONLY completed items for share page
-	const completedWorkItems = Array.from(workItemStats.values())
+	// Filter and calculate billable hours - session-based completed items
+	const sessionBasedCompleted = Array.from(workItemStats.values())
 		.filter((item) => item.totalSeconds >= MIN_DISPLAY_SECONDS)
-		.filter((item) => item.title && item.completedDate) // Only completed items!
+		.filter((item) => item.title && item.completedDate)
 		.map((item) => ({
 			...item,
-			billableHours: calculateBillableHours(item.totalSeconds)
-		}))
-		.sort((a, b) => {
-			if (a.completedDate && b.completedDate) {
-				return b.completedDate.localeCompare(a.completedDate);
-			}
-			return b.totalSeconds - a.totalSeconds;
-		});
+			// Use override if set, otherwise calculate
+			billableHours: item.billableHoursOverride ?? calculateBillableHours(item.totalSeconds)
+		}));
+
+	// Get standalone work items (completed in this month but not tied to sessions)
+	const standaloneWorkItems = await getCompletedWorkItemsInMonth(projectIds, year, month);
+	const sessionWorkItemIds = new Set(
+		Array.from(workItemStats.values()).map((item) => item.workItemId).filter(Boolean)
+	);
+	const standaloneCompleted = standaloneWorkItems
+		.filter((wi) => !sessionWorkItemIds.has(wi.id))
+		.map((wi) => ({
+			branch: wi.identifier,
+			workItem: wi.identifier,
+			workItemId: wi.id,
+			title: wi.title,
+			description: wi.description,
+			completedDate: wi.completed_date,
+			billableHoursOverride: wi.billable_hours,
+			sessions: [] as SessionWithDetails[],
+			totalSeconds: 0,
+			billableHours: wi.billable_hours ?? 0
+		}));
+
+	// Merge and sort
+	const completedWorkItems = [...sessionBasedCompleted, ...standaloneCompleted].sort((a, b) => {
+		if (a.completedDate && b.completedDate) {
+			return b.completedDate.localeCompare(a.completedDate);
+		}
+		return (b.billableHours ?? 0) - (a.billableHours ?? 0);
+	});
 
 	const completedBillableHours = completedWorkItems.reduce((sum, item) => sum + item.billableHours, 0);
 
