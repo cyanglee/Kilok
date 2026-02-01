@@ -74,17 +74,22 @@ export const load: PageServerLoad = async ({ params }) => {
 	const monthlyHours = contract?.monthly_hours ?? 0;
 	const carriedOver = contract?.carried_over ?? 0;
 
-	// 累積總額度 = (當前月份 × 月額度) + 結轉
+	// 年度總額度 = (12 × 月額度) + 結轉，或使用 total_hours
+	const yearlyQuota = monthlyHours > 0
+		? 12 * monthlyHours + carriedOver
+		: contractHours;
+
+	// 到當月累積額度 = (當前月份 × 月額度) + 結轉
 	const accumulatedQuota = monthlyHours > 0
 		? currentMonth * monthlyHours + carriedOver
 		: contractHours;
 
-	// 剩餘額度
-	const remainingHours = Math.max(0, accumulatedQuota - yearlyBillableHours);
+	// 剩餘額度（相對於年度總額度）
+	const remainingHours = Math.max(0, yearlyQuota - yearlyBillableHours);
 
-	// 使用率
-	const usagePercent = accumulatedQuota > 0
-		? (yearlyBillableHours / accumulatedQuota) * 100
+	// 使用率（相對於年度總額度）
+	const usagePercent = yearlyQuota > 0
+		? (yearlyBillableHours / yearlyQuota) * 100
 		: 0;
 
 	return {
@@ -98,6 +103,7 @@ export const load: PageServerLoad = async ({ params }) => {
 		contractHours,
 		monthlyHours,
 		carriedOver,
+		yearlyQuota,
 		accumulatedQuota,
 		yearlyBillableHours,
 		remainingHours,

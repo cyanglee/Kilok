@@ -36,15 +36,15 @@
 	<!-- Contract Stats -->
 	{#if data.hasContract}
 		<div class="mb-8 grid grid-cols-2 gap-4 md:grid-cols-4">
-			<!-- 累積可用額度 -->
+			<!-- 年度總額度 -->
 			<div class="rounded-xl border border-border bg-surface p-4 text-center shadow-sm">
-				<div class="text-xs font-medium text-text-muted">累積額度</div>
+				<div class="text-xs font-medium text-text-muted">年度額度</div>
 				<div class="mt-1 text-xl font-bold text-secondary">
-					{formatHours(data.accumulatedQuota)}
+					{formatHours(data.yearlyQuota)}
 				</div>
 				{#if data.monthlyHours > 0}
 					<div class="mt-1 text-xs text-text-muted">
-						{data.currentMonth}月 × {formatHours(data.monthlyHours)}
+						12月 × {formatHours(data.monthlyHours)}
 						{#if data.carriedOver > 0}+ 結轉{/if}
 					</div>
 				{/if}
@@ -64,7 +64,7 @@
 			<!-- 剩餘額度 -->
 			<div class="rounded-xl border-2 border-primary/30 bg-primary/5 p-4 text-center shadow-sm">
 				<div class="text-xs font-medium text-primary/70">剩餘額度</div>
-				<div class="mt-1 text-xl font-bold {data.remainingHours < data.monthlyHours ? 'text-warning' : 'text-success'}">
+				<div class="mt-1 text-xl font-bold {data.remainingHours < data.monthlyHours * 3 ? 'text-warning' : 'text-success'}">
 					{formatHours(data.remainingHours)}
 				</div>
 			</div>
@@ -95,7 +95,7 @@
 				></div>
 			</div>
 			<div class="mt-2 flex justify-between text-xs text-text-muted">
-				<span>{formatHours(data.yearlyBillableHours)} / {formatHours(data.accumulatedQuota)}</span>
+				<span>{formatHours(data.yearlyBillableHours)} / {formatHours(data.yearlyQuota)}</span>
 				<span>剩餘 {formatHours(data.remainingHours)}</span>
 			</div>
 		</div>
