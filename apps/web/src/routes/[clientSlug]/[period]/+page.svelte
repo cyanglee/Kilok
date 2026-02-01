@@ -1,50 +1,14 @@
 <script lang="ts">
 	import type { PageData } from './$types';
 	import { enhance } from '$app/forms';
+	import { formatHours, formatBillableHours, formatDate, monthNames } from '$lib/utils/formatters';
+	import { StatsCard, PeriodNavigation, EmptyState } from '$lib/components';
 
 	let { data }: { data: PageData } = $props();
-
-	function formatHours(hours: number): string {
-		const h = Math.floor(hours);
-		const m = Math.round((hours - h) * 60);
-		return m > 0 ? `${h}h ${m}m` : `${h}h`;
-	}
 
 	function formatSeconds(seconds: number): string {
 		return formatHours(seconds / 3600);
 	}
-
-	function formatBillableHours(hours: number): string {
-		// Billable hours always show .5 if applicable
-		if (hours % 1 === 0.5) {
-			return `${hours}h`;
-		}
-		return `${Math.floor(hours)}h`;
-	}
-
-	function formatDate(dateStr: string): string {
-		// Convert YYYY-MM-DD to MM/DD format
-		const parts = dateStr.split('-');
-		if (parts.length === 3) {
-			return `${parts[1]}/${parts[2]}`;
-		}
-		return dateStr;
-	}
-
-	const monthNames = [
-		'一月',
-		'二月',
-		'三月',
-		'四月',
-		'五月',
-		'六月',
-		'七月',
-		'八月',
-		'九月',
-		'十月',
-		'十一月',
-		'十二月'
-	];
 
 	// Edit state for work items
 	let editingWorkItemId: number | null = $state(null);
@@ -149,53 +113,40 @@
 </nav>
 
 <!-- Page Header with Month Navigation -->
-<div class="mb-8 flex items-start justify-between">
-	<div>
-		<h1 class="text-3xl font-bold text-text">
-			{data.year} 年 {monthNames[data.month - 1]} 月報
-		</h1>
-		<p class="mt-1 text-text-muted">{data.client.name}</p>
-	</div>
-	<div class="flex items-center gap-2">
-		<a
-			href="/{data.client.slug}/{data.prevPeriod}"
-			class="rounded-lg border border-border px-3 py-2 text-sm text-text-muted hover:bg-surface hover:text-text transition-colors"
-		>
-			← 上月
-		</a>
-		<a
-			href="/{data.client.slug}/{data.nextPeriod}"
-			class="rounded-lg border border-border px-3 py-2 text-sm text-text-muted hover:bg-surface hover:text-text transition-colors"
-		>
-			下月 →
-		</a>
+<div class="mb-8">
+	<div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+		<div>
+			<h1 class="text-2xl font-bold text-text">
+				{data.year} 年 {monthNames[data.month - 1]} 月報
+			</h1>
+			<p class="mt-1 text-text-muted">{data.client.name}</p>
+		</div>
+		<PeriodNavigation
+			prevHref="/{data.client.slug}/{data.prevPeriod}"
+			nextHref="/{data.client.slug}/{data.nextPeriod}"
+		/>
 	</div>
 </div>
 
 <!-- Stats Cards -->
+{@const monthlyRemaining = data.monthlyHours - data.completedBillableHours}
+{@const monthlySubtitle = monthlyRemaining >= 0
+	? `剩餘 ${formatHours(monthlyRemaining)}`
+	: `超額 ${formatHours(-monthlyRemaining)}`}
 <div class="mb-8 flex flex-wrap gap-4">
-	<!-- 本月計費工時 -->
-	<div class="rounded-xl border border-border bg-surface px-6 py-4 shadow-sm">
-		<div class="text-sm font-medium text-text-muted">本月計費工時</div>
-		<div class="text-3xl font-bold text-primary">{formatBillableHours(data.completedBillableHours)}</div>
-		<div class="mt-1 text-xs text-text-muted">原始 {formatHours(data.totalHours)}</div>
-	</div>
-
-	<!-- 本月額度（僅在有月額度時顯示）-->
+	<StatsCard
+		label="本月計費工時"
+		value={formatBillableHours(data.completedBillableHours)}
+		subtitle="原始 {formatHours(data.totalHours)}"
+		valueClass="text-primary text-3xl"
+	/>
 	{#if data.monthlyHours > 0}
-		<div class="rounded-xl border border-border bg-surface px-6 py-4 shadow-sm">
-			<div class="text-sm font-medium text-text-muted">本月額度</div>
-			<div class="text-3xl font-bold text-secondary">{formatHours(data.monthlyHours)}</div>
-			{#if data.completedBillableHours <= data.monthlyHours}
-				<div class="mt-1 text-xs text-success">
-					剩餘 {formatHours(data.monthlyHours - data.completedBillableHours)}
-				</div>
-			{:else}
-				<div class="mt-1 text-xs text-warning">
-					超額 {formatHours(data.completedBillableHours - data.monthlyHours)}
-				</div>
-			{/if}
-		</div>
+		<StatsCard
+			label="本月額度"
+			value={formatHours(data.monthlyHours)}
+			subtitle={monthlySubtitle}
+			valueClass="text-secondary text-3xl"
+		/>
 	{/if}
 </div>
 
@@ -520,11 +471,5 @@
 
 <!-- Empty State (only show when no tracking items and no form open) -->
 {#if data.trackingWorkItems.length === 0 && data.completedWorkItems.length === 0 && !showAddForm}
-	<div class="rounded-xl border border-border bg-surface p-12 text-center shadow-sm">
-		<svg class="mx-auto h-12 w-12 text-text-muted opacity-50" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-			<rect x="3" y="4" width="18" height="18" rx="2" />
-			<path d="M16 2v4M8 2v4M3 10h18" />
-		</svg>
-		<p class="mt-4 text-text-muted">本月尚無工作紀錄</p>
-	</div>
+	<EmptyState message="本月尚無工作紀錄" />
 {/if}

@@ -1,31 +1,16 @@
 <script lang="ts">
 	import type { PageData } from './$types';
+	import { formatHours, monthNames } from '$lib/utils/formatters';
+	import { StatsCard, QuotaProgressBar, MonthlyChart, EmptyState } from '$lib/components';
 
 	let { data }: { data: PageData } = $props();
 
-	function formatHours(hours: number): string {
-		const h = Math.floor(hours);
-		const m = Math.round((hours - h) * 60);
-		return m > 0 ? `${h}h ${m}m` : `${h}h`;
-	}
-
-	const monthNames = [
-		'一月',
-		'二月',
-		'三月',
-		'四月',
-		'五月',
-		'六月',
-		'七月',
-		'八月',
-		'九月',
-		'十月',
-		'十一月',
-		'十二月'
-	];
-
-	// Calculate max hours for chart scaling
-	const maxHours = Math.max(...data.monthlyStats.map((m) => m.hours), 1);
+	// Prepare chart data with sessions info
+	const chartData = data.monthlyStats.map((stat, i) => ({
+		month: i + 1,
+		hours: stat.hours,
+		sessions: stat.sessions
+	}));
 </script>
 
 <!-- Breadcrumb -->
@@ -52,185 +37,76 @@
 {#if data.monthlyHours > 0}
 	<!-- 月額度模式：精簡顯示 -->
 	<div class="mb-8 flex flex-wrap gap-4">
-		<!-- 累積可用額度（最重要的資訊）-->
-		<div
-			class="rounded-xl border-2 border-primary/30 bg-primary/5 p-5 shadow-sm transition-shadow hover:shadow-md"
-		>
-			<div class="text-xs font-medium text-primary/70">累積可用額度</div>
-			<div
-				class="mt-1 text-2xl font-bold {data.availableQuota < data.monthlyHours
-					? 'text-warning'
-					: 'text-success'}"
-			>
-				{formatHours(data.availableQuota)}
-			</div>
-			<div class="mt-1 text-xs text-text-muted">
-				含未用完結轉
-			</div>
-		</div>
-
-		<!-- 結轉時數（僅在 > 0 時顯示）-->
+		<StatsCard
+			label="累積可用額度"
+			value={formatHours(data.availableQuota)}
+			subtitle="含未用完結轉"
+			valueClass={data.availableQuota < data.monthlyHours ? 'text-warning' : 'text-success'}
+			highlighted={true}
+		/>
 		{#if data.carriedOver > 0}
-			<div
-				class="rounded-xl border border-border bg-surface p-5 shadow-sm transition-shadow hover:shadow-md"
-			>
-				<div class="text-xs font-medium text-text-muted">年度結轉</div>
-				<div class="mt-1 text-2xl font-bold text-cyan-600">
-					+{formatHours(data.carriedOver)}
-				</div>
-			</div>
+			<StatsCard
+				label="年度結轉"
+				value="+{formatHours(data.carriedOver)}"
+				valueClass="text-cyan-600"
+			/>
 		{/if}
 	</div>
 {:else}
 	<!-- 年度額度模式：原有顯示 -->
 	<div class="mb-8 grid grid-cols-2 gap-4 md:grid-cols-4">
-		<!-- This Month -->
-		<div
-			class="rounded-xl border border-border bg-surface p-5 shadow-sm transition-shadow hover:shadow-md"
-		>
-			<div class="text-xs font-medium text-text-muted">本月工時</div>
-			<div class="mt-1 text-2xl font-bold text-primary">
-				{formatHours(data.monthlyStats[new Date().getMonth()]?.hours ?? 0)}
-			</div>
-		</div>
-
-		<!-- Yearly Total -->
-		<div
-			class="rounded-xl border border-border bg-surface p-5 shadow-sm transition-shadow hover:shadow-md"
-		>
-			<div class="text-xs font-medium text-text-muted">年度累計</div>
-			<div class="mt-1 text-2xl font-bold text-text">{formatHours(data.yearlyHours)}</div>
-		</div>
-
-		<!-- Contract Hours -->
-		<div
-			class="rounded-xl border border-border bg-surface p-5 shadow-sm transition-shadow hover:shadow-md"
-		>
-			<div class="text-xs font-medium text-text-muted">合約額度</div>
-			<div class="mt-1 text-2xl font-bold text-secondary">
-				{data.contractHours > 0 ? formatHours(data.contractHours) : '-'}
-			</div>
-		</div>
-
-		<!-- Remaining -->
-		<div
-			class="rounded-xl border border-border bg-surface p-5 shadow-sm transition-shadow hover:shadow-md"
-		>
-			<div class="text-xs font-medium text-text-muted">剩餘額度</div>
-			<div
-				class="mt-1 text-2xl font-bold {data.usagePercent > 90
-					? 'text-danger'
-					: data.usagePercent > 70
-						? 'text-warning'
-						: 'text-success'}"
-			>
-				{data.contractHours > 0 ? formatHours(data.remainingHours) : '-'}
-			</div>
-		</div>
+		<StatsCard
+			label="本月工時"
+			value={formatHours(data.monthlyStats[new Date().getMonth()]?.hours ?? 0)}
+			valueClass="text-primary"
+		/>
+		<StatsCard
+			label="年度累計"
+			value={formatHours(data.yearlyHours)}
+			valueClass="text-text"
+		/>
+		<StatsCard
+			label="合約額度"
+			value={data.contractHours > 0 ? formatHours(data.contractHours) : '-'}
+			valueClass="text-secondary"
+		/>
+		<StatsCard
+			label="剩餘額度"
+			value={data.contractHours > 0 ? formatHours(data.remainingHours) : '-'}
+			valueClass={data.usagePercent > 90 ? 'text-danger' : data.usagePercent > 70 ? 'text-warning' : 'text-success'}
+		/>
 	</div>
 {/if}
 
 <!-- Usage Progress -->
-{#if data.monthlyHours > 0}
-	<!-- 月額度模式：只顯示年度進度條 -->
-	{#if data.yearlyQuota > 0}
-		{@const yearlyPercent = data.yearlyQuota > 0 ? (data.yearlyHours / data.yearlyQuota) * 100 : 0}
-		<div class="mb-8 rounded-xl border border-border bg-surface p-6 shadow-sm">
-			<div class="mb-2 flex justify-between">
-				<span class="text-sm font-medium text-text">年度額度使用進度</span>
-				<span
-					class="text-sm font-bold {yearlyPercent > 90
-						? 'text-danger'
-						: yearlyPercent > 70
-							? 'text-warning'
-							: 'text-text'}"
-				>
-					{yearlyPercent.toFixed(1)}%
-				</span>
-			</div>
-			<div class="h-3 overflow-hidden rounded-full bg-border">
-				<div
-					class="h-full rounded-full transition-all {yearlyPercent > 90
-						? 'bg-danger'
-						: yearlyPercent > 70
-							? 'bg-warning'
-							: 'bg-primary'}"
-					style="width: {Math.min(100, yearlyPercent)}%"
-				></div>
-			</div>
-			<div class="mt-2 flex justify-between text-xs text-text-muted">
-				<span>
-					{formatHours(data.yearlyHours)} / {formatHours(data.yearlyQuota)}
-					<span class="text-text-muted/60">
-						(12月 × {formatHours(data.monthlyHours)}{#if data.carriedOver > 0} + {formatHours(data.carriedOver)} 結轉{/if})
-					</span>
-				</span>
-				<span>{data.yearlySessions} 個工作階段</span>
-			</div>
-		</div>
-	{/if}
+{#if data.monthlyHours > 0 && data.yearlyQuota > 0}
+	<div class="mb-8">
+		<QuotaProgressBar
+			label="年度額度使用進度"
+			current={data.yearlyHours}
+			quota={data.yearlyQuota}
+			leftText="{formatHours(data.yearlyHours)} / {formatHours(data.yearlyQuota)} (12月 × {formatHours(data.monthlyHours)}{data.carriedOver > 0 ? ` + ${formatHours(data.carriedOver)} 結轉` : ''})"
+			rightText="{data.yearlySessions} 個工作階段"
+		/>
+	</div>
 {:else if data.contractHours > 0}
-	<!-- 年度額度模式進度條 -->
-	<div class="mb-8 rounded-xl border border-border bg-surface p-6 shadow-sm">
-		<div class="mb-2 flex justify-between">
-			<span class="text-sm font-medium text-text">年度額度使用進度</span>
-			<span
-				class="text-sm font-bold {data.usagePercent > 90
-					? 'text-danger'
-					: data.usagePercent > 70
-						? 'text-warning'
-						: 'text-text'}"
-			>
-				{data.usagePercent.toFixed(1)}%
-			</span>
-		</div>
-		<div class="h-3 overflow-hidden rounded-full bg-border">
-			<div
-				class="h-full rounded-full transition-all {data.usagePercent > 90
-					? 'bg-danger'
-					: data.usagePercent > 70
-						? 'bg-warning'
-						: 'bg-primary'}"
-				style="width: {Math.min(100, data.usagePercent)}%"
-			></div>
-		</div>
-		<div class="mt-2 flex justify-between text-xs text-text-muted">
-			<span>{formatHours(data.yearlyHours)} / {formatHours(data.contractHours)}</span>
-			<span>{data.yearlySessions} 個工作階段</span>
-		</div>
+	<div class="mb-8">
+		<QuotaProgressBar
+			label="年度額度使用進度"
+			current={data.yearlyHours}
+			quota={data.contractHours}
+			rightText="{data.yearlySessions} 個工作階段"
+		/>
 	</div>
 {/if}
 
 <!-- Monthly Chart -->
-<div class="mb-8 rounded-xl border border-border bg-surface p-6 shadow-sm">
-	<h2 class="mb-6 text-lg font-semibold text-text">月度工時趨勢</h2>
-	<div class="flex h-48 items-end justify-between gap-2">
-		{#each data.monthlyStats as stat, i}
-			{@const heightPercent = maxHours > 0 ? (stat.hours / maxHours) * 100 : 0}
-			{@const isCurrentMonth = i === new Date().getMonth()}
-			<div class="group flex flex-1 flex-col items-center">
-				<div class="relative mb-2 w-full">
-					<div
-						class="mx-auto w-full max-w-8 rounded-t transition-all {isCurrentMonth
-							? 'bg-primary'
-							: 'bg-secondary/60'} group-hover:bg-primary"
-						style="height: {Math.max(4, heightPercent * 1.5)}px"
-					></div>
-					<!-- Tooltip -->
-					<div
-						class="pointer-events-none absolute bottom-full left-1/2 mb-2 -translate-x-1/2 whitespace-nowrap rounded bg-text px-2 py-1 text-xs text-surface opacity-0 transition-opacity group-hover:opacity-100"
-					>
-						{formatHours(stat.hours)}
-						<br />
-						<span class="text-text-muted">{stat.sessions} 階段</span>
-					</div>
-				</div>
-				<span class="text-xs text-text-muted {isCurrentMonth ? 'font-bold text-primary' : ''}">
-					{i + 1}月
-				</span>
-			</div>
-		{/each}
-	</div>
+<div class="mb-8">
+	<MonthlyChart
+		data={chartData}
+		currentMonth={new Date().getMonth() + 1}
+		showSessions={true}
+	/>
 </div>
 
 <!-- Monthly Reports List -->
@@ -238,13 +114,7 @@
 	<h2 class="mb-6 text-lg font-semibold text-text">月份報告</h2>
 
 	{#if data.monthsWithData.length === 0}
-		<div class="py-8 text-center text-text-muted">
-			<svg class="mx-auto h-12 w-12 opacity-50" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-				<rect x="3" y="4" width="18" height="18" rx="2" />
-				<path d="M16 2v4M8 2v4M3 10h18" />
-			</svg>
-			<p class="mt-4">本年度尚無工作紀錄</p>
-		</div>
+		<EmptyState message="本年度尚無工作紀錄" />
 	{:else}
 		<div class="grid grid-cols-2 gap-3 md:grid-cols-4 lg:grid-cols-6">
 			{#each data.monthsWithData.reverse() as stat}

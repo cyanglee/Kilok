@@ -1,33 +1,9 @@
 <script lang="ts">
 	import type { PageData } from './$types';
+	import { formatHours, formatBillableHours, formatDate, monthNames } from '$lib/utils/formatters';
+	import { StatsCard, PeriodNavigation, EmptyState } from '$lib/components';
 
 	let { data }: { data: PageData } = $props();
-
-	function formatHours(hours: number): string {
-		const h = Math.floor(hours);
-		const m = Math.round((hours - h) * 60);
-		return m > 0 ? `${h}h ${m}m` : `${h}h`;
-	}
-
-	function formatBillableHours(hours: number): string {
-		if (hours % 1 === 0.5) {
-			return `${hours}h`;
-		}
-		return `${Math.floor(hours)}h`;
-	}
-
-	function formatDate(dateStr: string): string {
-		const parts = dateStr.split('-');
-		if (parts.length === 3) {
-			return `${parts[1]}/${parts[2]}`;
-		}
-		return dateStr;
-	}
-
-	const monthNames = [
-		'一月', '二月', '三月', '四月', '五月', '六月',
-		'七月', '八月', '九月', '十月', '十一月', '十二月'
-	];
 
 	// Parse description for sub-items with dates and time
 	interface SubItem {
@@ -73,6 +49,12 @@
 			subItems
 		};
 	}
+
+	// 計算月額度剩餘/超額
+	const monthlyRemaining = data.monthlyHours - data.completedBillableHours;
+	const monthlySubtitle = monthlyRemaining >= 0
+		? `剩餘 ${formatHours(monthlyRemaining)}`
+		: `超額 ${formatHours(-monthlyRemaining)}`;
 </script>
 
 <div class="max-w-5xl mx-auto">
@@ -92,46 +74,27 @@
 				</h1>
 				<p class="mt-1 text-text-muted">{data.clientName}</p>
 			</div>
-			<div class="flex items-center gap-2">
-				<a
-					href="/share/{data.token}/{data.prevPeriod}"
-					class="whitespace-nowrap rounded-lg border border-border px-3 py-2 text-sm text-text-muted hover:bg-surface hover:text-text transition-colors"
-				>
-					← 上月
-				</a>
-				<a
-					href="/share/{data.token}/{data.nextPeriod}"
-					class="whitespace-nowrap rounded-lg border border-border px-3 py-2 text-sm text-text-muted hover:bg-surface hover:text-text transition-colors"
-				>
-					下月 →
-				</a>
-			</div>
+			<PeriodNavigation
+				prevHref="/share/{data.token}/{data.prevPeriod}"
+				nextHref="/share/{data.token}/{data.nextPeriod}"
+			/>
 		</div>
 	</div>
 
 	<!-- Stats Cards -->
 	<div class="mb-8 flex flex-wrap gap-4">
-		<!-- 本月計費工時 -->
-		<div class="rounded-xl border border-border bg-surface px-6 py-4 shadow-sm">
-			<div class="text-sm font-medium text-text-muted">本月計費工時</div>
-			<div class="text-3xl font-bold text-primary">{formatBillableHours(data.completedBillableHours)}</div>
-		</div>
-
-		<!-- 本月額度（僅在有月額度時顯示）-->
+		<StatsCard
+			label="本月計費工時"
+			value={formatBillableHours(data.completedBillableHours)}
+			valueClass="text-primary text-3xl"
+		/>
 		{#if data.monthlyHours > 0}
-			<div class="rounded-xl border border-border bg-surface px-6 py-4 shadow-sm">
-				<div class="text-sm font-medium text-text-muted">本月額度</div>
-				<div class="text-3xl font-bold text-secondary">{formatHours(data.monthlyHours)}</div>
-				{#if data.completedBillableHours <= data.monthlyHours}
-					<div class="mt-1 text-xs text-success">
-						剩餘 {formatHours(data.monthlyHours - data.completedBillableHours)}
-					</div>
-				{:else}
-					<div class="mt-1 text-xs text-warning">
-						超額 {formatHours(data.completedBillableHours - data.monthlyHours)}
-					</div>
-				{/if}
-			</div>
+			<StatsCard
+				label="本月額度"
+				value={formatHours(data.monthlyHours)}
+				subtitle={monthlySubtitle}
+				valueClass="text-secondary text-3xl"
+			/>
 		{/if}
 	</div>
 
@@ -238,8 +201,6 @@
 			</table>
 		</div>
 	{:else}
-		<div class="rounded-xl border border-border bg-surface p-12 text-center shadow-sm">
-			<p class="text-text-muted">本月尚無已完成的工作報告</p>
-		</div>
+		<EmptyState message="本月尚無已完成的工作報告" />
 	{/if}
 </div>
