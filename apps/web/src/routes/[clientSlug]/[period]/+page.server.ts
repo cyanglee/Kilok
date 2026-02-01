@@ -225,15 +225,15 @@ export const load: PageServerLoad = async ({ params }) => {
 			isStandalone: true
 		}));
 
-	// Merge session-based and standalone completed items
+	// Merge session-based and standalone completed items (sorted by date ascending)
 	const completedWorkItems = [
 		...sessionBasedCompleted.map((item) => ({ ...item, isStandalone: false })),
 		...standaloneCompleted
 	].sort((a, b) => {
 		if (a.completedDate && b.completedDate) {
-			return b.completedDate.localeCompare(a.completedDate);
+			return a.completedDate.localeCompare(b.completedDate); // Ascending (oldest first)
 		}
-		return (b.billableHours ?? 0) - (a.billableHours ?? 0);
+		return (a.billableHours ?? 0) - (b.billableHours ?? 0);
 	});
 
 	// Calculate billable total only from completed items

@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3:*)",
+      "Bash(bun add:*)",
+      "Bash(bun remove:*)",
+      "Bash(wc:*)",
+      "Bash(/Users/take5/bin/claude-time-tracker sync:*)",
+      "Bash(# 檢查目前的 active sessions /Users/take5/bin/claude-time-tracker status 2>&1 echo \"\"\"\" echo \"\"=== 檢查 heartbeat 快取 ===\"\" cat ~/.cache/claude-time-tracker/heartbeats.jsonl)",
+      "Bash(else)",
+      "Bash(fi)",
+      "Bash(sd:*)"
+    ],
+    "additionalDirectories": [
+      "/Users/take5/workspace/rust/claude-time-tracker"
+    ]
+  }
+}

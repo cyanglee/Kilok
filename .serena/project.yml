@@ -1,0 +1,62 @@
+# Kilok - Claude Code Time Tracker
+# Serena project configuration
+
+project_name: "kilok"
+
+# Languages used in this project
+# - rust: main CLI and MCP server (crates/tracker)
+# - typescript/svelte: web dashboard (apps/web)
+languages:
+- rust
+- typescript
+
+# whether to use project's .gitignore files to ignore files
+ignore_all_files_in_gitignore: true
+
+# list of additional paths to ignore in all projects
+# same syntax as gitignore, so you can use * and **
+ignored_paths:
+- "target/**"
+- "node_modules/**"
+- ".svelte-kit/**"
+
+# whether the project is in read-only mode
+# If set to true, all editing tools will be disabled and attempts to use them will result in an error
+# Added on 2025-04-18
+read_only: false
+
+# File encoding
+encoding: utf-8
+
+# Initial prompt shown when activating this project
+initial_prompt: |
+  This is Kilok (claude-time-tracker), a time tracking tool for Claude Code.
+
+  Key components:
+  - crates/tracker: Rust CLI + MCP Server
+  - apps/web: SvelteKit dashboard
+
+  Uses SQLite/Turso for storage with transcript-based idle detection.
+# Tool configuration
+# Exclude tools that duplicate Claude Code's built-in capabilities
+excluded_tools: []
+
+# Include optional tools if needed
+included_optional_tools: []
+
+# Modes configuration
+# base_modes are always active, default_modes can be overridden
+base_modes:
+- interactive
+- editing
+
+# list of mode names that are to be activated by default.
+# The full set of modes to be activated is base_modes + default_modes.
+# If the setting is undefined, the default_modes from the global configuration (serena_config.yml) apply.
+# Otherwise, this overrides the setting from the global configuration (serena_config.yml).
+# This setting can, in turn, be overridden by CLI parameters (--mode).
+default_modes: []
+
+# fixed set of tools to use as the base tool set (if non-empty), replacing Serena's default set of tools.
+# This cannot be combined with non-empty excluded_tools or included_optional_tools.
+fixed_tools: []

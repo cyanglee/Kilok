@@ -143,12 +143,12 @@ export const load: PageServerLoad = async ({ params }) => {
 			billableHours: wi.billable_hours ?? 0
 		}));
 
-	// Merge and sort
+	// Merge and sort (ascending by date - oldest first)
 	const completedWorkItems = [...sessionBasedCompleted, ...standaloneCompleted].sort((a, b) => {
 		if (a.completedDate && b.completedDate) {
-			return b.completedDate.localeCompare(a.completedDate);
+			return a.completedDate.localeCompare(b.completedDate); // Ascending (oldest first)
 		}
-		return (b.billableHours ?? 0) - (a.billableHours ?? 0);
+		return (a.billableHours ?? 0) - (b.billableHours ?? 0);
 	});
 
 	const completedBillableHours = completedWorkItems.reduce((sum, item) => sum + item.billableHours, 0);
