@@ -55,17 +55,18 @@ fn default_weather_cache_ttl() -> u32 {
     60
 }
 
-/// Turso remote database settings for embedded replica sync
+/// Turso remote database settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TursoSettings {
     /// Turso database URL (e.g., "libsql://your-db.turso.io")
     pub url: String,
     /// Auth token for Turso (can also be set via TURSO_AUTH_TOKEN env var)
     pub auth_token: Option<String>,
-    /// Use pure remote mode (no local cache). Safer for concurrent access.
-    /// Default: false (uses embedded replica with local cache)
+    /// Use embedded replica mode (local cache with sync).
+    /// Default: false (uses pure remote mode for safer concurrent access)
+    /// Set to true only if you need offline support and don't have multiple writers.
     #[serde(default)]
-    pub remote_only: bool,
+    pub use_replica: bool,
 }
 
 impl Default for Settings {
@@ -146,7 +147,8 @@ pub struct EffectiveConfig {
     pub database_path: PathBuf,
     pub turso_url: Option<String>,
     pub turso_auth_token: Option<String>,
-    pub turso_remote_only: bool,
+    /// Use embedded replica mode (local cache). Default: false (pure remote).
+    pub turso_use_replica: bool,
     pub project_name: Option<String>,
     pub work_item_pattern: String,
     pub work_item_source: Option<WorkItemSource>,
@@ -164,10 +166,10 @@ impl EffectiveConfig {
         let database_path = expand_path(&global.settings.database_path)?;
 
         // Get Turso settings from config or environment
-        let (turso_url, turso_auth_token, turso_remote_only) = if let Some(ref turso) = global.settings.turso {
+        let (turso_url, turso_auth_token, turso_use_replica) = if let Some(ref turso) = global.settings.turso {
             let token = turso.auth_token.clone()
                 .or_else(|| std::env::var("TURSO_AUTH_TOKEN").ok());
-            (Some(turso.url.clone()), token, turso.remote_only)
+            (Some(turso.url.clone()), token, turso.use_replica)
         } else {
             (None, None, false)
         };
@@ -177,7 +179,7 @@ impl EffectiveConfig {
             database_path,
             turso_url,
             turso_auth_token,
-            turso_remote_only,
+            turso_use_replica,
             project_name: project.as_ref().and_then(|p| p.name.clone()),
             work_item_pattern: project
                 .as_ref()

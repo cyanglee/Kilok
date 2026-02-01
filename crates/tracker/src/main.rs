@@ -53,16 +53,17 @@ async fn main() -> Result<()> {
 
 async fn open_db(config: &EffectiveConfig) -> Result<Database> {
     if config.is_turso_enabled() {
-        if config.turso_remote_only {
-            // Pure remote mode - no local cache, safer for concurrent access
-            Database::open_remote(
+        if config.turso_use_replica {
+            // Embedded replica mode - local cache with sync
+            // Only use this if you need offline support and don't have multiple writers
+            Database::open_replica(
+                &config.database_path,
                 config.turso_url.as_ref().unwrap(),
                 config.turso_auth_token.as_ref().unwrap(),
             ).await
         } else {
-            // Embedded replica mode - local cache with sync
-            Database::open_replica(
-                &config.database_path,
+            // Pure remote mode (default) - no local cache, safer for concurrent access
+            Database::open_remote(
                 config.turso_url.as_ref().unwrap(),
                 config.turso_auth_token.as_ref().unwrap(),
             ).await
