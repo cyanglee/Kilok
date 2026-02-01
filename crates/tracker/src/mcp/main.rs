@@ -161,6 +161,8 @@ pub struct ListWorkItemsResponse {
 pub struct ListSessionsResponse {
     pub sessions: Vec<SessionDetailResponse>,
     pub total_seconds: i64,
+    /// Total billable seconds: total_seconds × 1.2, rounded up to nearest 0.5h
+    pub total_billable_seconds: i64,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -173,6 +175,14 @@ pub struct SessionDetailResponse {
     pub started_at: String,
     pub ended_at: Option<String>,
     pub active_seconds: i64,
+    /// Billable seconds: active_seconds × 1.2, rounded up to nearest 0.5h
+    pub billable_seconds: i64,
+    /// Client slug (if project is assigned to a client)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_slug: Option<String>,
+    /// Client name (if project is assigned to a client)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commits: Option<Vec<CommitResponse>>,
 }
@@ -184,6 +194,8 @@ pub struct WorkItemResponse {
     pub title: Option<String>,
     pub description: Option<String>,
     pub total_seconds: i64,
+    /// Billable seconds: total_seconds × 1.2, rounded up to nearest 0.5h
+    pub billable_seconds: i64,
     pub time_adjustment_seconds: i64,
     pub completed_date: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -199,6 +211,8 @@ pub struct WorkItemDetailResponse {
     pub title: Option<String>,
     pub description: Option<String>,
     pub total_seconds: i64,
+    /// Billable seconds: total_seconds × 1.2, rounded up to nearest 0.5h
+    pub billable_seconds: i64,
     pub time_adjustment_seconds: i64,
     pub completed_date: Option<String>,
     pub sessions: Vec<SessionResponse>,
@@ -262,6 +276,7 @@ impl TimeTrackerServer {
             };
 
             let total_seconds = db.calculate_work_item_total_seconds(wi.id).await.unwrap_or(0);
+            let billable_seconds = db_wrapper::calculate_billable_seconds(total_seconds);
             let source = db.get_project_source(wi.project_id).await.unwrap_or(None);
 
             responses.push(WorkItemResponse {
@@ -270,6 +285,7 @@ impl TimeTrackerServer {
                 title: wi.title,
                 description: wi.description,
                 total_seconds,
+                billable_seconds,
                 time_adjustment_seconds: wi.time_adjustment_seconds,
                 completed_date: wi.completed_date,
                 source,
@@ -314,6 +330,7 @@ impl TimeTrackerServer {
             };
 
             let active_secs = session.active_seconds.unwrap_or(0);
+            let billable_secs = db_wrapper::calculate_billable_seconds(active_secs);
             total_seconds += active_secs;
 
             responses.push(SessionDetailResponse {
@@ -325,13 +342,18 @@ impl TimeTrackerServer {
                 started_at: session.started_at.to_rfc3339(),
                 ended_at: session.ended_at.map(|dt| dt.to_rfc3339()),
                 active_seconds: active_secs,
+                billable_seconds: billable_secs,
+                client_slug: session.client_slug,
+                client_name: session.client_name,
                 commits,
             });
         }
 
+        let total_billable_seconds = db_wrapper::calculate_billable_seconds(total_seconds);
         Ok(Json(ListSessionsResponse {
             sessions: responses,
             total_seconds,
+            total_billable_seconds,
         }))
     }
 
@@ -369,12 +391,14 @@ impl TimeTrackerServer {
             })
             .collect();
 
+        let billable_seconds = db_wrapper::calculate_billable_seconds(detail.total_seconds);
         let response = WorkItemDetailResponse {
             id: detail.work_item.id,
             identifier: detail.work_item.identifier,
             title: detail.work_item.title,
             description: detail.work_item.description,
             total_seconds: detail.total_seconds,
+            billable_seconds,
             time_adjustment_seconds: detail.work_item.time_adjustment_seconds,
             completed_date: detail.work_item.completed_date,
             sessions,
@@ -414,6 +438,7 @@ impl TimeTrackerServer {
                 .calculate_work_item_total_seconds(updated.id)
                 .await
                 .unwrap_or(0);
+            let billable_seconds = db_wrapper::calculate_billable_seconds(total_seconds);
             let source = db.get_project_source(updated.project_id).await.unwrap_or(None);
 
             return Ok(Json(WorkItemResponse {
@@ -422,6 +447,7 @@ impl TimeTrackerServer {
                 title: updated.title,
                 description: updated.description,
                 total_seconds,
+                billable_seconds,
                 time_adjustment_seconds: updated.time_adjustment_seconds,
                 completed_date: updated.completed_date,
                 source,
@@ -433,6 +459,7 @@ impl TimeTrackerServer {
             .calculate_work_item_total_seconds(work_item.id)
             .await
             .unwrap_or(0);
+        let billable_seconds = db_wrapper::calculate_billable_seconds(total_seconds);
         let source = db.get_project_source(work_item.project_id).await.unwrap_or(None);
 
         Ok(Json(WorkItemResponse {
@@ -441,6 +468,7 @@ impl TimeTrackerServer {
             title: work_item.title,
             description: work_item.description,
             total_seconds,
+            billable_seconds,
             time_adjustment_seconds: work_item.time_adjustment_seconds,
             completed_date: work_item.completed_date,
             source,
@@ -471,6 +499,7 @@ impl TimeTrackerServer {
             .calculate_work_item_total_seconds(updated.id)
             .await
             .unwrap_or(0);
+        let billable_seconds = db_wrapper::calculate_billable_seconds(total_seconds);
 
         let source = db.get_project_source(updated.project_id).await.unwrap_or(None);
 
@@ -480,6 +509,7 @@ impl TimeTrackerServer {
             title: updated.title,
             description: updated.description,
             total_seconds,
+            billable_seconds,
             time_adjustment_seconds: updated.time_adjustment_seconds,
             completed_date: updated.completed_date,
             source,

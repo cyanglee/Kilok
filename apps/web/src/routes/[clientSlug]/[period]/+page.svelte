@@ -14,6 +14,23 @@
 		return formatHours(seconds / 3600);
 	}
 
+	function formatBillableHours(hours: number): string {
+		// Billable hours always show .5 if applicable
+		if (hours % 1 === 0.5) {
+			return `${hours}h`;
+		}
+		return `${Math.floor(hours)}h`;
+	}
+
+	function formatDate(dateStr: string): string {
+		// Convert YYYY-MM-DD to MM/DD format
+		const parts = dateStr.split('-');
+		if (parts.length === 3) {
+			return `${parts[1]}/${parts[2]}`;
+		}
+		return dateStr;
+	}
+
 	const monthNames = [
 		'一月',
 		'二月',
@@ -35,7 +52,7 @@
 	let editDescription = $state('');
 	let isSaving = $state(false);
 
-	function startEditing(item: (typeof data.workItemStats)[0]) {
+	function startEditing(item: (typeof data.completedWorkItems)[0] | (typeof data.trackingWorkItems)[0]) {
 		if (!item.workItemId) return;
 		editingWorkItemId = item.workItemId;
 		editTitle = item.title ?? '';
@@ -106,7 +123,7 @@
 	<span class="text-text">{data.year} {monthNames[data.month - 1]}</span>
 </nav>
 
-<!-- Page Header -->
+<!-- Page Header with Month Navigation -->
 <div class="mb-8 flex items-start justify-between">
 	<div>
 		<h1 class="text-3xl font-bold text-text">
@@ -114,31 +131,59 @@
 		</h1>
 		<p class="mt-1 text-text-muted">{data.client.name}</p>
 	</div>
-</div>
-
-<!-- Stats Card - 只顯示總工時 -->
-<div class="mb-8">
-	<div
-		class="inline-flex items-center gap-3 rounded-xl border border-border bg-surface px-6 py-4 shadow-sm"
-	>
-		<div class="text-sm font-medium text-text-muted">本月總工時</div>
-		<div class="text-3xl font-bold text-primary">{formatHours(data.totalHours)}</div>
+	<div class="flex items-center gap-2">
+		<a
+			href="/{data.client.slug}/{data.prevPeriod}"
+			class="rounded-lg border border-border px-3 py-2 text-sm text-text-muted hover:bg-surface hover:text-text transition-colors"
+		>
+			← 上月
+		</a>
+		<a
+			href="/{data.client.slug}/{data.nextPeriod}"
+			class="rounded-lg border border-border px-3 py-2 text-sm text-text-muted hover:bg-surface hover:text-text transition-colors"
+		>
+			下月 →
+		</a>
 	</div>
 </div>
 
-<!-- Work Items Table - 簡潔的業主報告 -->
-{#if data.workItemStats.length > 0}
-	<div class="overflow-hidden rounded-xl border border-border bg-surface shadow-sm">
+<!-- Stats Card - 顯示計費工時 -->
+<div class="mb-8">
+	<div
+		class="inline-flex items-center gap-4 rounded-xl border border-border bg-surface px-6 py-4 shadow-sm"
+	>
+		<div>
+			<div class="text-sm font-medium text-text-muted">本月計費工時</div>
+			<div class="text-3xl font-bold text-primary">{formatBillableHours(data.completedBillableHours)}</div>
+		</div>
+		<div class="h-8 w-px bg-border"></div>
+		<div>
+			<div class="text-xs text-text-muted">原始</div>
+			<div class="text-lg text-text-muted">{formatHours(data.totalHours)}</div>
+		</div>
+	</div>
+</div>
+
+<!-- Completed Work Items Table - 已完成報告 -->
+{#if data.completedWorkItems.length > 0}
+	<div class="mb-8 overflow-hidden rounded-xl border border-border bg-surface shadow-sm">
+		<div class="border-b border-border bg-background/50 px-6 py-3">
+			<h2 class="text-sm font-semibold text-text">已完成報告</h2>
+		</div>
 		<table class="w-full">
 			<thead>
-				<tr class="border-b border-border bg-background/50">
-					<th class="px-6 py-3 text-left text-sm font-medium text-text-muted">工作項目</th>
-					<th class="px-6 py-3 text-right text-sm font-medium text-text-muted">工時</th>
+				<tr class="border-b border-border bg-background/30">
+					<th class="px-6 py-3 text-left text-xs font-medium text-text-muted w-24 whitespace-nowrap">完成日期</th>
+					<th class="px-6 py-3 text-left text-xs font-medium text-text-muted">工作項目</th>
+					<th class="px-6 py-3 text-right text-xs font-medium text-text-muted w-24">計費工時</th>
 				</tr>
 			</thead>
 			<tbody class="divide-y divide-border">
-				{#each data.workItemStats as item}
+				{#each data.completedWorkItems as item}
 					<tr class="group hover:bg-background/30 transition-colors">
+						<td class="px-6 py-4 text-sm text-text-muted font-mono">
+							{item.completedDate ? formatDate(item.completedDate) : '-'}
+						</td>
 						<td class="px-6 py-4">
 							{#if editingWorkItemId === item.workItemId}
 								<!-- Edit Mode -->
@@ -194,18 +239,7 @@
 								{@const parsed = parseDescription(item.description)}
 								<div class="flex items-start justify-between">
 									<div class="min-w-0 flex-1">
-										<div class="flex items-center gap-2">
-											{#if item.title}
-												<h4 class="font-medium text-text">{item.title}</h4>
-											{:else}
-												<h4 class="font-medium text-text-muted italic">
-													{item.workItem}
-												</h4>
-											{/if}
-											{#if item.lastDate}
-												<span class="text-xs text-text-muted font-mono">({item.lastDate})</span>
-											{/if}
-										</div>
+										<h4 class="font-medium text-text">{item.title}</h4>
 										{#if parsed.summary}
 											<p class="mt-1 text-sm text-text-muted">{parsed.summary}</p>
 										{/if}
@@ -223,21 +257,6 @@
 												{/each}
 											</ul>
 										{/if}
-										{#if item.commits.length > 0}
-											<details class="mt-2 group/commits">
-												<summary class="text-xs text-text-muted cursor-pointer hover:text-primary">
-													{item.commits.length} 個 commits
-												</summary>
-												<ul class="mt-1 space-y-0.5 pl-2 border-l-2 border-border">
-													{#each item.commits as commit}
-														<li class="text-xs text-text-muted">
-															<code class="text-primary/60">{commit.hash.slice(0, 7)}</code>
-															<span class="ml-1">{commit.message ?? '(no message)'}</span>
-														</li>
-													{/each}
-												</ul>
-											</details>
-										{/if}
 									</div>
 									{#if item.workItemId}
 										<button
@@ -251,23 +270,79 @@
 							{/if}
 						</td>
 						<td class="px-6 py-4 text-right">
-							<span class="text-lg font-bold text-primary">{formatSeconds(item.totalSeconds)}</span>
+							<div class="text-lg font-bold text-primary">{formatBillableHours(item.billableHours)}</div>
 						</td>
 					</tr>
 				{/each}
 			</tbody>
 			<tfoot>
 				<tr class="border-t border-border bg-background/50">
+					<td class="px-6 py-3"></td>
 					<td class="px-6 py-3 text-sm font-medium text-text">合計</td>
-					<td class="px-6 py-3 text-right text-lg font-bold text-primary">{formatHours(data.totalHours)}</td>
+					<td class="px-6 py-3 text-right">
+						<div class="text-lg font-bold text-primary">{formatBillableHours(data.completedBillableHours)}</div>
+					</td>
 				</tr>
 			</tfoot>
 		</table>
 	</div>
 {/if}
 
+<!-- Tracking Work Items Table - 追蹤中 (Admin only) -->
+{#if data.trackingWorkItems.length > 0}
+	<div class="overflow-hidden rounded-xl border border-border/50 bg-surface/50 shadow-sm">
+		<div class="border-b border-border/50 bg-background/30 px-6 py-3 flex items-center gap-2">
+			<span class="text-amber-500">
+				<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+					<circle cx="12" cy="12" r="10" />
+					<polyline points="12 6 12 12 16 14" />
+				</svg>
+			</span>
+			<h2 class="text-sm font-semibold text-text-muted">追蹤中</h2>
+			<span class="text-xs text-text-muted">(尚未產生報告)</span>
+		</div>
+		<table class="w-full">
+			<thead>
+				<tr class="border-b border-border/50 bg-background/20">
+					<th class="px-6 py-3 text-left text-xs font-medium text-text-muted">Branch</th>
+					<th class="px-6 py-3 text-right text-xs font-medium text-text-muted w-24">原始時間</th>
+					<th class="px-6 py-3 text-right text-xs font-medium text-text-muted w-20">Sessions</th>
+				</tr>
+			</thead>
+			<tbody class="divide-y divide-border/50">
+				{#each data.trackingWorkItems as item}
+					<tr class="group hover:bg-background/20 transition-colors">
+						<td class="px-6 py-3">
+							<div class="flex items-center gap-2">
+								<code class="text-sm text-text-muted font-mono">{item.branch}</code>
+								{#if item.workItemId}
+									<button
+										onclick={() => startEditing(item)}
+										class="opacity-0 group-hover:opacity-100 transition-opacity text-xs text-primary hover:text-primary/80"
+									>
+										編輯
+									</button>
+								{/if}
+							</div>
+							{#if item.title}
+								<div class="text-xs text-text-muted mt-1">{item.title}</div>
+							{/if}
+						</td>
+						<td class="px-6 py-3 text-right">
+							<span class="text-sm text-text-muted">{formatSeconds(item.totalSeconds)}</span>
+						</td>
+						<td class="px-6 py-3 text-right">
+							<span class="text-sm text-text-muted">{item.sessionCount}</span>
+						</td>
+					</tr>
+				{/each}
+			</tbody>
+		</table>
+	</div>
+{/if}
+
 <!-- Empty State -->
-{#if data.workItemStats.length === 0}
+{#if data.completedWorkItems.length === 0 && data.trackingWorkItems.length === 0}
 	<div class="rounded-xl border border-border bg-surface p-12 text-center shadow-sm">
 		<svg class="mx-auto h-12 w-12 text-text-muted opacity-50" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
 			<rect x="3" y="4" width="18" height="18" rx="2" />

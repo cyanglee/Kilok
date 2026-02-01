@@ -6,6 +6,22 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Datelike, NaiveDate, TimeZone, Utc};
 use std::path::PathBuf;
 
+// Billable hours calculation constants
+const BILLABLE_MULTIPLIER: f64 = 1.2;
+const BILLABLE_ROUND_UNIT: f64 = 0.5; // hours
+
+/// Calculate billable seconds from raw seconds
+/// Formula: raw_hours × 1.2, rounded up to nearest 0.5h
+pub fn calculate_billable_seconds(raw_seconds: i64) -> i64 {
+    if raw_seconds <= 0 {
+        return 0;
+    }
+    let raw_hours = raw_seconds as f64 / 3600.0;
+    let multiplied = raw_hours * BILLABLE_MULTIPLIER;
+    let rounded = (multiplied / BILLABLE_ROUND_UNIT).ceil() * BILLABLE_ROUND_UNIT;
+    (rounded * 3600.0) as i64
+}
+
 // Import from the main crate
 // Note: Since this is a separate binary, we need to duplicate some code
 // or use the library approach. For now, we'll use direct database access.
@@ -37,6 +53,8 @@ pub struct Session {
     pub started_at: DateTime<Utc>,
     pub ended_at: Option<DateTime<Utc>>,
     pub active_seconds: Option<i64>,
+    pub client_slug: Option<String>,
+    pub client_name: Option<String>,
 }
 
 /// Commit from database
@@ -237,15 +255,18 @@ impl DbWrapper {
 
         // Build query based on filters
         // All queries JOIN with projects to get display_name (with fallback to path basename)
+        // LEFT JOIN clients to get client info
         // COALESCE + REPLACE extracts the last path component when display_name is NULL
         // Use LOWER() for case-insensitive matching
         let query = match (project, start.as_ref(), end.as_ref()) {
             (Some(_), Some(_), Some(_)) => {
                 "SELECT s.id, s.project_id,
                         COALESCE(p.display_name, REPLACE(p.path, RTRIM(p.path, REPLACE(p.path, '/', '')), '')) as project_name,
-                        s.branch, s.work_item, s.started_at, s.ended_at, s.active_seconds
+                        s.branch, s.work_item, s.started_at, s.ended_at, s.active_seconds,
+                        c.slug as client_slug, c.name as client_name
                  FROM sessions s
                  JOIN projects p ON s.project_id = p.id
+                 LEFT JOIN clients c ON p.client_id = c.id
                  WHERE (LOWER(p.path) LIKE ?1 OR LOWER(p.display_name) LIKE ?1)
                    AND s.started_at >= ?2 AND s.started_at < ?3
                    AND s.status = 'completed'
@@ -254,9 +275,11 @@ impl DbWrapper {
             (Some(_), None, None) => {
                 "SELECT s.id, s.project_id,
                         COALESCE(p.display_name, REPLACE(p.path, RTRIM(p.path, REPLACE(p.path, '/', '')), '')) as project_name,
-                        s.branch, s.work_item, s.started_at, s.ended_at, s.active_seconds
+                        s.branch, s.work_item, s.started_at, s.ended_at, s.active_seconds,
+                        c.slug as client_slug, c.name as client_name
                  FROM sessions s
                  JOIN projects p ON s.project_id = p.id
+                 LEFT JOIN clients c ON p.client_id = c.id
                  WHERE (LOWER(p.path) LIKE ?1 OR LOWER(p.display_name) LIKE ?1)
                    AND s.status = 'completed'
                  ORDER BY s.started_at"
@@ -264,9 +287,11 @@ impl DbWrapper {
             (None, Some(_), Some(_)) => {
                 "SELECT s.id, s.project_id,
                         COALESCE(p.display_name, REPLACE(p.path, RTRIM(p.path, REPLACE(p.path, '/', '')), '')) as project_name,
-                        s.branch, s.work_item, s.started_at, s.ended_at, s.active_seconds
+                        s.branch, s.work_item, s.started_at, s.ended_at, s.active_seconds,
+                        c.slug as client_slug, c.name as client_name
                  FROM sessions s
                  JOIN projects p ON s.project_id = p.id
+                 LEFT JOIN clients c ON p.client_id = c.id
                  WHERE s.started_at >= ?1 AND s.started_at < ?2
                    AND s.status = 'completed'
                  ORDER BY s.started_at"
@@ -274,9 +299,11 @@ impl DbWrapper {
             _ => {
                 "SELECT s.id, s.project_id,
                         COALESCE(p.display_name, REPLACE(p.path, RTRIM(p.path, REPLACE(p.path, '/', '')), '')) as project_name,
-                        s.branch, s.work_item, s.started_at, s.ended_at, s.active_seconds
+                        s.branch, s.work_item, s.started_at, s.ended_at, s.active_seconds,
+                        c.slug as client_slug, c.name as client_name
                  FROM sessions s
                  JOIN projects p ON s.project_id = p.id
+                 LEFT JOIN clients c ON p.client_id = c.id
                  WHERE s.status = 'completed'
                  ORDER BY s.started_at"
             }
@@ -311,6 +338,8 @@ impl DbWrapper {
                 started_at: parse_datetime(row.get::<String>(5)?),
                 ended_at: row.get::<Option<String>>(6)?.map(parse_datetime),
                 active_seconds: row.get::<Option<i64>>(7)?,
+                client_slug: row.get::<Option<String>>(8)?,
+                client_name: row.get::<Option<String>>(9)?,
             });
         }
 
@@ -491,6 +520,9 @@ impl DbWrapper {
                 started_at: parse_datetime(row.get::<String>(5)?),
                 ended_at: row.get::<Option<String>>(6)?.map(parse_datetime),
                 active_seconds: row.get::<Option<i64>>(7)?,
+                // These are not needed for work item detail, so set to None
+                client_slug: None,
+                client_name: None,
             };
 
             // Get commits for this session

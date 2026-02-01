@@ -27,6 +27,16 @@
 	let editingClient = $state<typeof data.clients[0] | null>(null);
 	let deletingClient = $state<typeof data.clients[0] | null>(null);
 	let isDeleting = $state(false);
+	let copiedToken = $state<string | null>(null);
+
+	function copyShareLink(token: string) {
+		const url = `${window.location.origin}/share/${token}`;
+		navigator.clipboard.writeText(url);
+		copiedToken = token;
+		setTimeout(() => {
+			copiedToken = null;
+		}, 2000);
+	}
 
 	function openCreateDialog() {
 		editingClient = null;
@@ -143,9 +153,20 @@
 											<h3 class="font-semibold text-slate-900">{client.name}</h3>
 											<code class="text-xs text-slate-400 font-mono">/{client.slug}</code>
 										</div>
-										<p class="mt-0.5 text-sm text-slate-500">
-											{client.projectCount} 個專案
-										</p>
+										<div class="mt-0.5 flex items-center gap-3 text-sm text-slate-500">
+											<span>{client.projectCount} 個專案</span>
+											{#if client.share_token}
+												<button
+													onclick={() => copyShareLink(client.share_token!)}
+													class="inline-flex items-center gap-1 text-primary hover:text-primary/80 transition-colors"
+												>
+													<svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+														<path stroke-linecap="round" stroke-linejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+													</svg>
+													{copiedToken === client.share_token ? '已複製!' : '複製分享連結'}
+												</button>
+											{/if}
+										</div>
 									</div>
 								</div>
 

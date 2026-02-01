@@ -16,6 +16,34 @@ async function ensureSchema() {
 	} catch {
 		// Column already exists, ignore
 	}
+	try {
+		// Add share_token column to clients table (simplified: one token per client)
+		await db.execute('ALTER TABLE clients ADD COLUMN share_token TEXT');
+	} catch {
+		// Column already exists, ignore
+	}
+	try {
+		// Create index for share_token lookups
+		await db.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_clients_share_token ON clients(share_token)');
+	} catch {
+		// Index already exists, ignore
+	}
+	try {
+		// Generate tokens for existing clients that don't have one
+		const clientsWithoutToken = await db.execute(
+			'SELECT id FROM clients WHERE share_token IS NULL'
+		);
+		for (const row of clientsWithoutToken.rows) {
+			const client = row as unknown as { id: number };
+			const token = crypto.randomUUID();
+			await db.execute({
+				sql: 'UPDATE clients SET share_token = ? WHERE id = ?',
+				args: [token, client.id]
+			});
+		}
+	} catch (e) {
+		console.error('Failed to generate tokens for existing clients:', e);
+	}
 	schemaInitialized = true;
 }
 
@@ -27,6 +55,7 @@ export interface Client {
 	id: number;
 	slug: string;
 	name: string;
+	share_token: string | null;
 	created_at: string;
 }
 
@@ -83,6 +112,7 @@ export interface WorkItem {
 	created_at: string;
 	updated_at: string | null;
 }
+
 
 // Query helpers
 export async function getClients(): Promise<Client[]> {
@@ -167,11 +197,29 @@ export async function getClientById(id: number): Promise<Client | null> {
 }
 
 export async function createClient(name: string, slug: string): Promise<Client> {
+	const shareToken = crypto.randomUUID();
 	const result = await db.execute({
-		sql: 'INSERT INTO clients (name, slug) VALUES (?, ?) RETURNING *',
-		args: [name, slug]
+		sql: 'INSERT INTO clients (name, slug, share_token) VALUES (?, ?, ?) RETURNING *',
+		args: [name, slug, shareToken]
 	});
 	return result.rows[0] as unknown as Client;
+}
+
+export async function getClientByShareToken(token: string): Promise<Client | null> {
+	const result = await db.execute({
+		sql: 'SELECT * FROM clients WHERE share_token = ?',
+		args: [token]
+	});
+	return (result.rows[0] as unknown as Client) ?? null;
+}
+
+export async function regenerateClientShareToken(clientId: number): Promise<Client | null> {
+	const newToken = crypto.randomUUID();
+	const result = await db.execute({
+		sql: 'UPDATE clients SET share_token = ? WHERE id = ? RETURNING *',
+		args: [newToken, clientId]
+	});
+	return (result.rows[0] as unknown as Client) ?? null;
 }
 
 export async function updateClient(id: number, name: string, slug: string): Promise<Client | null> {
@@ -389,3 +437,4 @@ export async function updateWorkItem(
 	});
 	return (result.rows[0] as unknown as WorkItem) ?? null;
 }
+
