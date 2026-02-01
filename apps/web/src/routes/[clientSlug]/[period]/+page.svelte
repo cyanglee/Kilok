@@ -10,6 +10,14 @@
 		return formatHours(seconds / 3600);
 	}
 
+	// 計算月額度剩餘/超額
+	const monthlyRemaining = $derived(data.monthlyHours - data.completedBillableHours);
+	const monthlySubtitle = $derived(
+		monthlyRemaining >= 0
+			? `剩餘 ${formatHours(monthlyRemaining)}`
+			: `超額 ${formatHours(-monthlyRemaining)}`
+	);
+
 	// Edit state for work items
 	let editingWorkItemId: number | null = $state(null);
 	let editTitle = $state('');
@@ -129,10 +137,6 @@
 </div>
 
 <!-- Stats Cards -->
-{@const monthlyRemaining = data.monthlyHours - data.completedBillableHours}
-{@const monthlySubtitle = monthlyRemaining >= 0
-	? `剩餘 ${formatHours(monthlyRemaining)}`
-	: `超額 ${formatHours(-monthlyRemaining)}`}
 <div class="mb-8 flex flex-wrap gap-4">
 	<StatsCard
 		label="本月計費工時"

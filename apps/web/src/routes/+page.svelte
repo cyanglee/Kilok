@@ -1,28 +1,23 @@
 <script lang="ts">
 	import type { PageData } from './$types';
+	import { formatHours, monthNames } from '$lib/utils/formatters';
+	import { page } from '$app/stores';
 
 	let { data }: { data: PageData } = $props();
 
-	function formatHours(hours: number): string {
-		const h = Math.floor(hours);
-		const m = Math.round((hours - h) * 60);
-		return m > 0 ? `${h}h ${m}m` : `${h}h`;
-	}
+	// Copy share link to clipboard
+	let copiedClientId: number | null = $state(null);
 
-	const monthNames = [
-		'一月',
-		'二月',
-		'三月',
-		'四月',
-		'五月',
-		'六月',
-		'七月',
-		'八月',
-		'九月',
-		'十月',
-		'十一月',
-		'十二月'
-	];
+	async function copyShareLink(clientId: number, shareToken: string | null) {
+		if (!shareToken) return;
+		const baseUrl = $page.url.origin;
+		const shareUrl = `${baseUrl}/share/${shareToken}`;
+		await navigator.clipboard.writeText(shareUrl);
+		copiedClientId = clientId;
+		setTimeout(() => {
+			copiedClientId = null;
+		}, 2000);
+	}
 </script>
 
 <!-- Page Header -->
@@ -76,59 +71,82 @@
 	{:else}
 		<div class="grid grid-cols-1 gap-4 md:grid-cols-2">
 			{#each data.clientStats as stat}
-				<a
-					href="/{stat.client.slug}"
-					class="group cursor-pointer rounded-lg border border-border p-5 transition-all hover:border-primary hover:shadow-md"
-				>
-					<div class="flex items-start justify-between">
-						<div>
-							<h3 class="font-semibold text-text group-hover:text-primary">{stat.client.name}</h3>
-							<p class="mt-1 text-sm text-text-muted">
-								{stat.projects.length} 個專案
-							</p>
+				<div class="rounded-lg border border-border p-5 transition-all hover:border-primary hover:shadow-md">
+					<a href="/{stat.client.slug}" class="group block">
+						<div class="flex items-start justify-between">
+							<div>
+								<h3 class="font-semibold text-text group-hover:text-primary">{stat.client.name}</h3>
+								<p class="mt-1 text-sm text-text-muted">
+									{stat.projects.length} 個專案
+								</p>
+							</div>
+							<div class="text-right">
+								<div class="text-lg font-bold text-text">{formatHours(stat.monthlyHours)}</div>
+								<div class="text-xs text-text-muted">本月</div>
+							</div>
 						</div>
-						<div class="text-right">
-							<div class="text-lg font-bold text-text">{formatHours(stat.monthlyHours)}</div>
-							<div class="text-xs text-text-muted">本月</div>
-						</div>
-					</div>
 
-					{#if stat.contractHours > 0}
-						<!-- Progress Bar -->
-						<div class="mt-4">
-							<div class="mb-1 flex justify-between text-xs">
-								<span class="text-text-muted">年度額度使用</span>
-								<span
-									class={stat.usagePercent > 90
-										? 'text-danger'
-										: stat.usagePercent > 70
-											? 'text-warning'
-											: 'text-text-muted'}
-								>
-									{stat.usagePercent.toFixed(0)}%
-								</span>
+						{#if stat.contractHours > 0}
+							<!-- Progress Bar -->
+							<div class="mt-4">
+								<div class="mb-1 flex justify-between text-xs">
+									<span class="text-text-muted">年度額度使用</span>
+									<span
+										class={stat.usagePercent > 90
+											? 'text-danger'
+											: stat.usagePercent > 70
+												? 'text-warning'
+												: 'text-text-muted'}
+									>
+										{stat.usagePercent.toFixed(0)}%
+									</span>
+								</div>
+								<div class="h-2 overflow-hidden rounded-full bg-border">
+									<div
+										class="h-full rounded-full transition-all {stat.usagePercent > 90
+											? 'bg-danger'
+											: stat.usagePercent > 70
+												? 'bg-warning'
+												: 'bg-primary'}"
+										style="width: {Math.min(100, stat.usagePercent)}%"
+									></div>
+								</div>
+								<div class="mt-1 flex justify-between text-xs text-text-muted">
+									<span>{formatHours(stat.yearlyHours)} 已使用</span>
+									<span>剩餘 {formatHours(stat.remainingHours)}</span>
+								</div>
 							</div>
-							<div class="h-2 overflow-hidden rounded-full bg-border">
-								<div
-									class="h-full rounded-full transition-all {stat.usagePercent > 90
-										? 'bg-danger'
-										: stat.usagePercent > 70
-											? 'bg-warning'
-											: 'bg-primary'}"
-									style="width: {Math.min(100, stat.usagePercent)}%"
-								></div>
+						{:else}
+							<div class="mt-4 text-xs text-text-muted">
+								年度累計：{formatHours(stat.yearlyHours)}
 							</div>
-							<div class="mt-1 flex justify-between text-xs text-text-muted">
-								<span>{formatHours(stat.yearlyHours)} 已使用</span>
-								<span>剩餘 {formatHours(stat.remainingHours)}</span>
-							</div>
-						</div>
-					{:else}
-						<div class="mt-4 text-xs text-text-muted">
-							年度累計：{formatHours(stat.yearlyHours)}
+						{/if}
+					</a>
+
+					<!-- Share Link -->
+					{#if stat.client.share_token}
+						<div class="mt-3 pt-3 border-t border-border">
+							<button
+								type="button"
+								onclick={() => copyShareLink(stat.client.id, stat.client.share_token)}
+								class="flex items-center gap-1.5 text-xs text-text-muted hover:text-primary transition-colors"
+							>
+								{#if copiedClientId === stat.client.id}
+									<svg class="w-3.5 h-3.5 text-success" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+										<polyline points="20 6 9 17 4 12" />
+									</svg>
+									<span class="text-success">已複製</span>
+								{:else}
+									<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+										<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+										<path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+									</svg>
+									<span>複製分享連結</span>
+								{/if}
+							</button>
 						</div>
 					{/if}
-				</a>
+				</div>
 			{/each}
 		</div>
 	{/if}
