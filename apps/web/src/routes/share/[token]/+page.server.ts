@@ -92,6 +92,42 @@ export const load: PageServerLoad = async ({ params }) => {
 		? (yearlyBillableHours / yearlyQuota) * 100
 		: 0;
 
+	// 計算每月累積額度明細（只在有月額度時）
+	const monthlyQuotaBreakdown: Array<{
+		month: number;
+		quota: number;        // 當月新增額度
+		used: number;         // 當月使用
+		startBalance: number; // 月初餘額
+		endBalance: number;   // 月底餘額
+	}> = [];
+
+	if (monthlyHours > 0) {
+		let runningBalance = carriedOver; // 從結轉開始
+
+		for (let month = 1; month <= 12; month++) {
+			const startBalance = runningBalance;
+			const quota = monthlyHours;
+
+			// 找出該月的使用量
+			const monthStat = monthlyStats.find(s => s.year === currentYear && s.month === month);
+			const used = monthStat?.billableHours ?? 0;
+
+			// 月底餘額 = 月初 + 當月額度 - 當月使用
+			const endBalance = startBalance + quota - used;
+
+			monthlyQuotaBreakdown.push({
+				month,
+				quota,
+				used,
+				startBalance,
+				endBalance
+			});
+
+			// 下個月的月初餘額
+			runningBalance = endBalance;
+		}
+	}
+
 	return {
 		token: params.token,
 		clientName: client.name,
@@ -107,6 +143,7 @@ export const load: PageServerLoad = async ({ params }) => {
 		accumulatedQuota,
 		yearlyBillableHours,
 		remainingHours,
-		usagePercent
+		usagePercent,
+		monthlyQuotaBreakdown
 	};
 };

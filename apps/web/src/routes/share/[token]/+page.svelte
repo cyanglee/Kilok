@@ -101,6 +101,63 @@
 		</div>
 	{/if}
 
+	<!-- Monthly Quota Breakdown -->
+	{#if data.monthlyQuotaBreakdown.length > 0}
+		<div class="mb-8 rounded-xl border border-border bg-surface shadow-sm overflow-hidden">
+			<div class="border-b border-border bg-background/50 px-6 py-3">
+				<h2 class="text-sm font-semibold text-text">月度額度明細</h2>
+			</div>
+			<div class="overflow-x-auto">
+				<table class="w-full text-sm">
+					<thead>
+						<tr class="border-b border-border bg-background/30">
+							<th class="px-4 py-3 text-left font-medium text-text-muted">月份</th>
+							<th class="px-4 py-3 text-right font-medium text-text-muted">月初餘額</th>
+							<th class="px-4 py-3 text-right font-medium text-text-muted">+額度</th>
+							<th class="px-4 py-3 text-right font-medium text-text-muted">-使用</th>
+							<th class="px-4 py-3 text-right font-medium text-text-muted">月底餘額</th>
+						</tr>
+					</thead>
+					<tbody class="divide-y divide-border">
+						{#if data.carriedOver > 0}
+							<tr class="bg-cyan-50/50">
+								<td class="px-4 py-2 text-text-muted">上年度結轉</td>
+								<td class="px-4 py-2 text-right">-</td>
+								<td class="px-4 py-2 text-right text-cyan-600 font-medium">+{formatHours(data.carriedOver)}</td>
+								<td class="px-4 py-2 text-right">-</td>
+								<td class="px-4 py-2 text-right font-medium">{formatHours(data.carriedOver)}</td>
+							</tr>
+						{/if}
+						{#each data.monthlyQuotaBreakdown as item}
+							{@const isCurrent = item.month === data.currentMonth}
+							{@const isFuture = item.month > data.currentMonth}
+							<tr class="{isCurrent ? 'bg-primary/5' : ''} {isFuture ? 'text-text-muted/60' : ''}">
+								<td class="px-4 py-2 {isCurrent ? 'font-bold text-primary' : 'text-text'}">
+									{item.month}月
+									{#if isCurrent}
+										<span class="ml-1 text-xs text-primary/70">(本月)</span>
+									{/if}
+								</td>
+								<td class="px-4 py-2 text-right">{formatHours(item.startBalance)}</td>
+								<td class="px-4 py-2 text-right text-success">+{formatHours(item.quota)}</td>
+								<td class="px-4 py-2 text-right {item.used > 0 ? 'text-primary font-medium' : ''}">
+									{#if item.used > 0}
+										-{formatHours(item.used)}
+									{:else}
+										-
+									{/if}
+								</td>
+								<td class="px-4 py-2 text-right font-medium {item.endBalance < item.quota ? 'text-warning' : 'text-success'}">
+									{formatHours(item.endBalance)}
+								</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			</div>
+		</div>
+	{/if}
+
 	<!-- Monthly List -->
 	<div class="rounded-xl border border-border bg-surface shadow-sm overflow-hidden">
 		<div class="border-b border-border bg-background/50 px-6 py-3">
