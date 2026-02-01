@@ -3,6 +3,12 @@
 
 	let { data }: { data: PageData } = $props();
 
+	function formatHours(hours: number): string {
+		const h = Math.floor(hours);
+		const m = Math.round((hours - h) * 60);
+		return m > 0 ? `${h}h ${m}m` : `${h}h`;
+	}
+
 	function formatBillableHours(hours: number): string {
 		if (hours % 1 === 0.5) {
 			return `${hours}h`;
@@ -24,12 +30,83 @@
 	<!-- Header -->
 	<div class="mb-8 text-center">
 		<h1 class="text-2xl font-bold text-text">{data.clientName}</h1>
-		<p class="mt-2 text-text-muted">工時報告</p>
+		<p class="mt-2 text-text-muted">{data.currentYear} 年度工時報告</p>
 	</div>
 
+	<!-- Contract Stats -->
+	{#if data.hasContract}
+		<div class="mb-8 grid grid-cols-2 gap-4 md:grid-cols-4">
+			<!-- 累積可用額度 -->
+			<div class="rounded-xl border border-border bg-surface p-4 text-center shadow-sm">
+				<div class="text-xs font-medium text-text-muted">累積額度</div>
+				<div class="mt-1 text-xl font-bold text-secondary">
+					{formatHours(data.accumulatedQuota)}
+				</div>
+				{#if data.monthlyHours > 0}
+					<div class="mt-1 text-xs text-text-muted">
+						{data.currentMonth}月 × {formatHours(data.monthlyHours)}
+						{#if data.carriedOver > 0}+ 結轉{/if}
+					</div>
+				{/if}
+			</div>
+
+			<!-- 已使用 -->
+			<div class="rounded-xl border border-border bg-surface p-4 text-center shadow-sm">
+				<div class="text-xs font-medium text-text-muted">已使用</div>
+				<div class="mt-1 text-xl font-bold text-primary">
+					{formatHours(data.yearlyBillableHours)}
+				</div>
+				<div class="mt-1 text-xs text-text-muted">
+					{data.usagePercent.toFixed(0)}%
+				</div>
+			</div>
+
+			<!-- 剩餘額度 -->
+			<div class="rounded-xl border-2 border-primary/30 bg-primary/5 p-4 text-center shadow-sm">
+				<div class="text-xs font-medium text-primary/70">剩餘額度</div>
+				<div class="mt-1 text-xl font-bold {data.remainingHours < data.monthlyHours ? 'text-warning' : 'text-success'}">
+					{formatHours(data.remainingHours)}
+				</div>
+			</div>
+
+			<!-- 結轉時數 -->
+			{#if data.carriedOver > 0}
+				<div class="rounded-xl border border-border bg-surface p-4 text-center shadow-sm">
+					<div class="text-xs font-medium text-text-muted">年度結轉</div>
+					<div class="mt-1 text-xl font-bold text-cyan-600">
+						+{formatHours(data.carriedOver)}
+					</div>
+				</div>
+			{/if}
+		</div>
+
+		<!-- Progress Bar -->
+		<div class="mb-8 rounded-xl border border-border bg-surface p-5 shadow-sm">
+			<div class="mb-2 flex justify-between">
+				<span class="text-sm font-medium text-text">年度額度使用進度</span>
+				<span class="text-sm font-bold {data.usagePercent > 90 ? 'text-danger' : data.usagePercent > 70 ? 'text-warning' : 'text-text'}">
+					{data.usagePercent.toFixed(1)}%
+				</span>
+			</div>
+			<div class="h-3 overflow-hidden rounded-full bg-border">
+				<div
+					class="h-full rounded-full transition-all {data.usagePercent > 90 ? 'bg-danger' : data.usagePercent > 70 ? 'bg-warning' : 'bg-primary'}"
+					style="width: {Math.min(100, data.usagePercent)}%"
+				></div>
+			</div>
+			<div class="mt-2 flex justify-between text-xs text-text-muted">
+				<span>{formatHours(data.yearlyBillableHours)} / {formatHours(data.accumulatedQuota)}</span>
+				<span>剩餘 {formatHours(data.remainingHours)}</span>
+			</div>
+		</div>
+	{/if}
+
 	<!-- Monthly List -->
-	{#if data.monthlyStats.length > 0}
-		<div class="overflow-hidden rounded-xl border border-border bg-surface shadow-sm">
+	<div class="rounded-xl border border-border bg-surface shadow-sm overflow-hidden">
+		<div class="border-b border-border bg-background/50 px-6 py-3">
+			<h2 class="text-sm font-semibold text-text">月份報告</h2>
+		</div>
+		{#if data.monthlyStats.length > 0}
 			<div class="divide-y divide-border">
 				{#each data.monthlyStats as stat}
 					<a
@@ -41,10 +118,10 @@
 					</a>
 				{/each}
 			</div>
-		</div>
-	{:else}
-		<div class="rounded-xl border border-border bg-surface p-12 text-center shadow-sm">
-			<p class="text-text-muted">尚無工時紀錄</p>
-		</div>
-	{/if}
+		{:else}
+			<div class="p-12 text-center">
+				<p class="text-text-muted">尚無工時紀錄</p>
+			</div>
+		{/if}
+	</div>
 </div>

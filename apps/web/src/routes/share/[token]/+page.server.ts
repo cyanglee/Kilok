@@ -1,7 +1,10 @@
 import {
 	getClientByShareToken,
 	getProjectsByClientId,
-	getSessionsInMonth
+	getSessionsInMonth,
+	getContractByClientAndYear,
+	getCompletedWorkItemsInMonth,
+	db
 } from '$lib/server/db';
 import { calculateBillableHours } from '$lib/billable';
 import { error } from '@sveltejs/kit';
@@ -18,9 +21,15 @@ export const load: PageServerLoad = async ({ params }) => {
 	const projects = await getProjectsByClientId(client.id);
 	const projectIds = projects.map((p) => p.id);
 
-	// Calculate monthly stats (last 12 months)
+	const currentYear = new Date().getFullYear();
+	const currentMonth = new Date().getMonth() + 1;
+	const contract = await getContractByClientAndYear(client.id, currentYear);
+
+	// Calculate monthly stats (last 12 months) with billable hours from work items
 	const now = new Date();
-	const monthlyStats: { period: string; hours: number; billableHours: number }[] = [];
+	const monthlyStats: { period: string; year: number; month: number; hours: number; billableHours: number }[] = [];
+
+	let yearlyBillableHours = 0;
 
 	for (let i = 0; i < 12; i++) {
 		const date = new Date(now.getFullYear(), now.getMonth() - i, 1);
@@ -31,18 +40,67 @@ export const load: PageServerLoad = async ({ params }) => {
 		const sessions = await getSessionsInMonth(projectIds, year, month);
 		const totalSeconds = sessions.reduce((sum, s) => sum + (s.active_seconds ?? 0), 0);
 
-		if (totalSeconds > 0) {
+		// Get billable hours from completed work items
+		const completedWorkItems = await getCompletedWorkItemsInMonth(projectIds, year, month);
+		const workItemBillableHours = completedWorkItems.reduce(
+			(sum, wi) => sum + (wi.billable_hours ?? 0),
+			0
+		);
+
+		// Also count session-based completed work items billable hours
+		// For simplicity, use work item billable hours if available, otherwise calculate
+		const billableHours = workItemBillableHours > 0
+			? workItemBillableHours
+			: calculateBillableHours(totalSeconds);
+
+		if (totalSeconds > 0 || workItemBillableHours > 0) {
 			monthlyStats.push({
 				period,
+				year,
+				month,
 				hours: totalSeconds / 3600,
-				billableHours: calculateBillableHours(totalSeconds)
+				billableHours
 			});
+
+			// Sum up yearly billable hours
+			if (year === currentYear) {
+				yearlyBillableHours += billableHours;
+			}
 		}
 	}
+
+	// Contract calculations
+	const contractHours = contract?.total_hours ?? 0;
+	const monthlyHours = contract?.monthly_hours ?? 0;
+	const carriedOver = contract?.carried_over ?? 0;
+
+	// 累積總額度 = (當前月份 × 月額度) + 結轉
+	const accumulatedQuota = monthlyHours > 0
+		? currentMonth * monthlyHours + carriedOver
+		: contractHours;
+
+	// 剩餘額度
+	const remainingHours = Math.max(0, accumulatedQuota - yearlyBillableHours);
+
+	// 使用率
+	const usagePercent = accumulatedQuota > 0
+		? (yearlyBillableHours / accumulatedQuota) * 100
+		: 0;
 
 	return {
 		token: params.token,
 		clientName: client.name,
-		monthlyStats
+		monthlyStats,
+		currentYear,
+		currentMonth,
+		// Contract info
+		hasContract: contractHours > 0 || monthlyHours > 0,
+		contractHours,
+		monthlyHours,
+		carriedOver,
+		accumulatedQuota,
+		yearlyBillableHours,
+		remainingHours,
+		usagePercent
 	};
 };
