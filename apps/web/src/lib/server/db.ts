@@ -6,6 +6,22 @@ export const db = createDbClient({
 	authToken: TURSO_AUTH_TOKEN
 });
 
+// Schema migrations - run once on startup
+let schemaInitialized = false;
+async function ensureSchema() {
+	if (schemaInitialized) return;
+	try {
+		// Add monthly_hours column to contracts table
+		await db.execute('ALTER TABLE contracts ADD COLUMN monthly_hours REAL DEFAULT 0');
+	} catch {
+		// Column already exists, ignore
+	}
+	schemaInitialized = true;
+}
+
+// Initialize schema on module load
+ensureSchema().catch(console.error);
+
 // Types matching Rust CLI models
 export interface Client {
 	id: number;
@@ -19,6 +35,7 @@ export interface Contract {
 	client_id: number;
 	year: number;
 	total_hours: number;
+	monthly_hours: number;
 	carried_over: number;
 	created_at: string;
 }
@@ -272,22 +289,23 @@ export async function createContract(
 	clientId: number,
 	year: number,
 	totalHours: number,
+	monthlyHours: number,
 	carriedOver: number
 ): Promise<Contract> {
 	const result = await db.execute({
-		sql: 'INSERT INTO contracts (client_id, year, total_hours, carried_over) VALUES (?, ?, ?, ?) RETURNING *',
-		args: [clientId, year, totalHours, carriedOver]
+		sql: 'INSERT INTO contracts (client_id, year, total_hours, monthly_hours, carried_over) VALUES (?, ?, ?, ?, ?) RETURNING *',
+		args: [clientId, year, totalHours, monthlyHours, carriedOver]
 	});
 	return result.rows[0] as unknown as Contract;
 }
 
 export async function updateContract(
 	id: number,
-	data: { year: number; total_hours: number; carried_over: number }
+	data: { year: number; total_hours: number; monthly_hours: number; carried_over: number }
 ): Promise<Contract | null> {
 	const result = await db.execute({
-		sql: 'UPDATE contracts SET year = ?, total_hours = ?, carried_over = ? WHERE id = ? RETURNING *',
-		args: [data.year, data.total_hours, data.carried_over, id]
+		sql: 'UPDATE contracts SET year = ?, total_hours = ?, monthly_hours = ?, carried_over = ? WHERE id = ? RETURNING *',
+		args: [data.year, data.total_hours, data.monthly_hours, data.carried_over, id]
 	});
 	return (result.rows[0] as unknown as Contract) ?? null;
 }

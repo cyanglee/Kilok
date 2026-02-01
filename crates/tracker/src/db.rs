@@ -321,6 +321,26 @@ impl Database {
             ).await.context("Failed to add active_seconds column to commits")?;
         }
 
+        // Migration: Add monthly_hours to contracts table for monthly quota tracking
+        let contract_columns: Vec<String> = {
+            let mut rows = self.conn.query(
+                "PRAGMA table_info(contracts)",
+                (),
+            ).await?;
+            let mut cols = Vec::new();
+            while let Some(row) = rows.next().await? {
+                cols.push(row.get::<String>(1)?);
+            }
+            cols
+        };
+
+        if !contract_columns.contains(&"monthly_hours".to_string()) {
+            self.conn.execute(
+                "ALTER TABLE contracts ADD COLUMN monthly_hours REAL DEFAULT 0",
+                (),
+            ).await.context("Failed to add monthly_hours column to contracts")?;
+        }
+
         Ok(())
     }
 

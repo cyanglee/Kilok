@@ -77,6 +77,24 @@ export const load: PageServerLoad = async ({ params }) => {
 	}
 
 	const contractHours = contract?.total_hours ?? 0;
+	const monthlyHours = contract?.monthly_hours ?? 0;
+	const carriedOver = contract?.carried_over ?? 0;
+
+	// 計算月度額度相關數據
+	const currentMonth = new Date().getMonth() + 1; // 1-12
+	const currentMonthHours = monthlyStats[currentMonth - 1]?.hours ?? 0;
+
+	// 到當月為止的累積總額度 = (當前月份 × 月額度) + 結轉
+	const accumulatedQuota = monthlyHours > 0 ? currentMonth * monthlyHours + carriedOver : 0;
+
+	// 累積可用額度 = 累積總額度 - 年度已使用
+	const availableQuota = Math.max(0, accumulatedQuota - yearlyHours);
+
+	// 當月額度使用率（如果有月額度的話）
+	const monthlyUsagePercent =
+		monthlyHours > 0 ? (currentMonthHours / monthlyHours) * 100 : 0;
+
+	// 年度額度使用率
 	const remainingHours = Math.max(0, contractHours - yearlyHours);
 	const usagePercent = contractHours > 0 ? (yearlyHours / contractHours) * 100 : 0;
 
@@ -94,6 +112,14 @@ export const load: PageServerLoad = async ({ params }) => {
 		contractHours,
 		remainingHours,
 		usagePercent,
-		currentYear
+		currentYear,
+		// 新增月度額度相關數據
+		monthlyHours,
+		carriedOver,
+		currentMonth,
+		currentMonthHours,
+		accumulatedQuota,
+		availableQuota,
+		monthlyUsagePercent
 	};
 };

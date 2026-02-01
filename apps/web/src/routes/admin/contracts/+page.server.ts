@@ -22,6 +22,7 @@ const contractSchema = z.object({
 		.min(2020, '年份不能小於 2020')
 		.max(2100, '年份不能大於 2100'),
 	total_hours: z.number({ message: '請輸入合約時數' }).min(0, '時數不能為負數'),
+	monthly_hours: z.number({ message: '請輸入月額度' }).min(0, '月額度不能為負數').default(0),
 	carried_over: z.number().min(0, '結轉時數不能為負數').default(0)
 });
 
@@ -37,6 +38,7 @@ export const load: PageServerLoad = async () => {
 	// Set default year to current year
 	form.data.year = new Date().getFullYear();
 	form.data.total_hours = 0;
+	form.data.monthly_hours = 0;
 	form.data.carried_over = 0;
 
 	return { contracts, clients, form, deleteForm };
@@ -50,7 +52,7 @@ export const actions: Actions = {
 			return fail(400, { form });
 		}
 
-		const { client_id, year, total_hours, carried_over } = form.data;
+		const { client_id, year, total_hours, monthly_hours, carried_over } = form.data;
 
 		// Check if contract already exists for this client and year
 		if (await contractExists(client_id, year)) {
@@ -58,7 +60,7 @@ export const actions: Actions = {
 		}
 
 		try {
-			await createContract(client_id, year, total_hours, carried_over);
+			await createContract(client_id, year, total_hours, monthly_hours, carried_over);
 			return message(form, { type: 'success', text: '合約已建立' });
 		} catch (err) {
 			console.error('Failed to create contract:', err);
@@ -73,7 +75,7 @@ export const actions: Actions = {
 			return fail(400, { form });
 		}
 
-		const { id, client_id, year, total_hours, carried_over } = form.data;
+		const { id, client_id, year, total_hours, monthly_hours, carried_over } = form.data;
 
 		// Check if another contract exists for this client and year
 		if (await contractExists(client_id, year, id)) {
@@ -81,7 +83,7 @@ export const actions: Actions = {
 		}
 
 		try {
-			const updated = await updateContract(id, { year, total_hours, carried_over });
+			const updated = await updateContract(id, { year, total_hours, monthly_hours, carried_over });
 
 			if (!updated) {
 				return message(form, { type: 'error', text: '找不到此合約' }, { status: 404 });

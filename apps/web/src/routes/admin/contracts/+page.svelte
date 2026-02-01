@@ -33,6 +33,7 @@
 			client_id: data.clients[0]?.id ?? 0,
 			year: new Date().getFullYear(),
 			total_hours: 0,
+			monthly_hours: 0,
 			carried_over: 0
 		};
 		dialogOpen = true;
@@ -45,6 +46,7 @@
 			client_id: contract.client_id,
 			year: contract.year,
 			total_hours: contract.total_hours,
+			monthly_hours: contract.monthly_hours ?? 0,
 			carried_over: contract.carried_over
 		};
 		dialogOpen = true;
@@ -166,8 +168,14 @@
 
 								<!-- Center: Hours -->
 								<div class="hidden sm:flex items-center gap-6 text-sm">
+									{#if contract.monthly_hours > 0}
+										<div class="text-center">
+											<p class="text-xs text-slate-400">月額度</p>
+											<p class="font-mono font-semibold text-indigo-600">{formatHours(contract.monthly_hours)}h/月</p>
+										</div>
+									{/if}
 									<div class="text-center">
-										<p class="text-xs text-slate-400">合約</p>
+										<p class="text-xs text-slate-400">年度總額</p>
 										<p class="font-mono font-semibold text-slate-700">{formatHours(contract.total_hours)}h</p>
 									</div>
 									<div class="text-center">
@@ -206,9 +214,15 @@
 							</div>
 
 							<!-- Mobile hours (shown below on small screens) -->
-							<div class="mt-3 flex items-center gap-4 text-sm sm:hidden">
+							<div class="mt-3 flex flex-wrap items-center gap-3 text-sm sm:hidden">
+								{#if contract.monthly_hours > 0}
+									<div>
+										<span class="text-slate-400">月額度:</span>
+										<span class="font-mono font-semibold text-indigo-600">{formatHours(contract.monthly_hours)}h</span>
+									</div>
+								{/if}
 								<div>
-									<span class="text-slate-400">合約:</span>
+									<span class="text-slate-400">年度:</span>
 									<span class="font-mono font-semibold text-slate-700">{formatHours(contract.total_hours)}h</span>
 								</div>
 								<div>
@@ -288,9 +302,28 @@
 				{/if}
 			</div>
 
+			<div class="space-y-2">
+				<Label for="monthly_hours">月額度</Label>
+				<Input
+					id="monthly_hours"
+					name="monthly_hours"
+					type="number"
+					bind:value={$form.monthly_hours}
+					min={0}
+					step={0.5}
+					placeholder="例如：6"
+				/>
+				{#if $errors.monthly_hours}
+					<p class="text-sm text-danger">{$errors.monthly_hours}</p>
+				{/if}
+				<p class="text-xs text-text-muted">
+					每月固定額度，未使用的可累積至下月
+				</p>
+			</div>
+
 			<div class="grid grid-cols-2 gap-4">
 				<div class="space-y-2">
-					<Label for="total_hours">合約時數</Label>
+					<Label for="total_hours">年度總額</Label>
 					<Input
 						id="total_hours"
 						name="total_hours"
@@ -302,6 +335,9 @@
 					{#if $errors.total_hours}
 						<p class="text-sm text-danger">{$errors.total_hours}</p>
 					{/if}
+					<p class="text-xs text-text-muted">
+						年度合約總時數上限
+					</p>
 				</div>
 
 				<div class="space-y-2">
