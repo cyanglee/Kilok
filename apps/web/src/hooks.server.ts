@@ -1,17 +1,25 @@
 import { redirect } from '@sveltejs/kit';
 import type { Handle } from '@sveltejs/kit';
 
-// Routes that don't require authentication
-const publicRoutes = [
+// Routes that don't require authentication (prefix match)
+const publicRoutePrefixes = [
 	'/admin/login',
-	'/share/'  // All share routes are public
+	'/share/',     // All share routes are public
+	'/demo'        // Demo page
+];
+
+// Exact match routes
+const publicExactRoutes = [
+	'/'            // Landing page
 ];
 
 export const handle: Handle = async ({ event, resolve }) => {
 	const path = event.url.pathname;
 
 	// Check if route is public
-	const isPublicRoute = publicRoutes.some(route => path.startsWith(route));
+	const isPublicRoute =
+		publicExactRoutes.includes(path) ||
+		publicRoutePrefixes.some(prefix => path.startsWith(prefix));
 
 	if (!isPublicRoute) {
 		// Check for admin session cookie

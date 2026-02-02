@@ -1,5 +1,4 @@
-/* Google Fonts - must be first */
-/* English fonts + Noto Sans TC for Chinese */
+/* Google Fonts - English fonts + Noto Sans TC for Chinese and Taiwanese romanization */
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+TC:wght@400;500;700&family=Space+Grotesk:wght@400;500;600;700&display=swap');
 
 @import 'tailwindcss';
@@ -68,3 +67,4 @@ pre,
 .font-mono {
 	font-family: var(--font-mono);
 }
+
