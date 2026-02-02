@@ -14,7 +14,7 @@
 - **計費工時計算**：自動計算（原始 × 1.2，0.5h 為單位進位），支援手動覆寫
 - **月額度追蹤**：支援月結型合約，追蹤使用狀況與累計結轉
 - **客戶分享連結**：Token-based 公開頁面，讓客戶查看唯讀報告
-- **雲端同步（可選）**：支援 Turso embedded replica，多裝置同步
+- **Turso 雲端資料庫**：預設 Pure Remote 模式，Turso 為唯一資料來源（不再使用本機 SQLite）
 - **MCP Server**：提供 Claude Code 內建工具，方便查詢和管理追蹤資料
 - **Web 儀表板**：SvelteKit 應用，支援客戶/專案/合約管理、工作項目編輯
 
@@ -62,6 +62,73 @@
 └── skill/
     └── SKILL.md                # Claude Code slash command 定義
 ```
+
+---
+
+## 資料庫架構
+
+### Pure Remote 模式（預設）
+
+Kilok 預設使用 **Pure Remote** 模式連接 Turso，不再使用本機 SQLite：
+
+```
+CLI/MCP Server  ──────>  Turso Cloud (唯一資料來源)
+                              │
+Web Dashboard   ──────────────┘
+```
+
+**優點**：
+- 避免多 process 同時寫入本機 SQLite 的併發問題
+- 資料即時同步，無需手動 sync
+- Web 儀表板與 CLI 看到一致的資料
+
+**設定** (`~/.config/claude-time-tracker/config.toml`)：
+```toml
+[settings.turso]
+url = "libsql://your-db.turso.io"
+# use_replica = false  # 預設為 false（Pure Remote）
+```
+
+### Embedded Replica 模式（進階）
+
+若需要離線支援，可啟用 embedded replica 模式：
+
+```toml
+[settings.turso]
+url = "libsql://your-db.turso.io"
+use_replica = true  # 啟用本機快取
+```
+
+> ⚠️ 注意：Embedded Replica 模式可能在多 process 同時存取時產生鎖定問題。
+
+---
+
+## Statusline 模組
+
+### Powerlevel10k 風格
+
+`statusline.rs` 實作類似 Powerlevel10k 的圓角氣泡風格，使用 Nerd Font 圖示：
+
+| 圖示 | 說明 |
+|------|------|
+|  | 資料夾 |
+|  | Git branch |
+| ⏱ | 計時器（Kilok 追蹤時間）|
+|  | AI 晶片（模型）|
+|  | 大腦（Context）|
+
+### 天氣模組
+
+`weather.rs` 使用台灣中央氣象署 API：
+
+```toml
+[settings.weather]
+api_key = "your-cwa-api-key"  # 必填，否則不顯示天氣
+location = "北投區"            # 查詢地區
+cache_ttl_minutes = 60         # 快取時間
+```
+
+快取位置：`~/.cache/claude-time-tracker/weather.json`
 
 ---
 

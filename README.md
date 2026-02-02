@@ -15,7 +15,7 @@ Kilok 透過 Claude Code 的 statusline 整合，自動記錄每個專案的工�
 - **月額度追蹤** - 支援月結型合約，追蹤每月額度使用狀況與累計結轉
 - **客戶分享連結** - 產生唯讀分享連結，讓客戶查看工時報告
 - **多格式報告** - 匯出為 Markdown、CSV、TSV（Google Sheets）或 JSON
-- **雲端同步（可選）** - 透過 Turso embedded replica 多裝置同步
+- **Turso 雲端資料庫** - 預設使用純遠端模式（Pure Remote），Turso 為唯一資料來源
 - **MCP 整合** - 在 Claude Code 內直接查詢和管理追蹤資料
 - **Web 儀表板** - 視覺化報告介面，支援客戶管理、合約設定、工作項目編輯
 
@@ -77,23 +77,40 @@ chmod +x ~/.local/bin/kilok-statusline.sh
 
 ### Statusline 顯示內容
 
-範例腳本會顯示以下資訊：
+Kilok 提供 Powerlevel10k 風格的 statusline，使用圓角氣泡和 Nerd Font 圖示：
 
 ```
-目錄 [branch*] ⏱ 1h23m 💎 3.3.0 ⬢ 20.0.0 [Opus 4.5] [██████░░░░] 45k/200k 14:30:00
+  專案目錄   main ✔   ⏱ 1h 23m   25°C ☁   Opus 4.5   ███░░ 45%   14:30:00
 ```
 
-| 項目 | 說明 |
+| 氣泡 | 說明 |
 |------|------|
-| 目錄 | 目前工作目錄名稱 |
-| [branch*] | Git branch，`*` 表示有未提交變更，↑↓ 表示與遠端的差異 |
-| ⏱ 1h23m | **Kilok 追蹤的活躍時間** |
-| 💎 3.3.0 | Ruby 版本（從 .tool-versions 讀取） |
-| ⬢ 20.0.0 | Node 版本（從 .tool-versions 讀取） |
-| [Opus 4.5] | 目前使用的模型 |
-| [██████░░░░] | Context 使用量進度條 |
-| 45k/200k | Token 使用量 |
+|  專案目錄 | 目前工作目錄（縮短顯示） |
+|  main ✔ | Git branch + 狀態（✔ 乾淨, ✘ 有變更, ↑↓ 與遠端差異） |
+| ⏱ 1h 23m | **Kilok 追蹤的活躍時間** |
+| 25°C ☁ | 天氣資訊（需設定 API key，見下方） |
+|  Opus 4.5 | 目前使用的 Claude 模型 |
+| ███░░ 45% | Context window 使用量 |
 | 14:30:00 | 目前時間 |
+
+> **注意**：需要安裝 [Nerd Font](https://www.nerdfonts.com/) 才能正確顯示圖示。
+
+### 天氣功能（可選）
+
+天氣資訊使用台灣中央氣象署（CWA）API，需要申請 API key：
+
+1. 前往 [CWA 開放資料平台](https://opendata.cwa.gov.tw/) 註冊帳號
+2. 申請 API 授權碼
+3. 在 `~/.config/claude-time-tracker/config.toml` 設定：
+
+```toml
+[settings.weather]
+api_key = "your-cwa-api-key"
+location = "北投區"        # 預設地區
+cache_ttl_minutes = 60     # 快取時間（分鐘）
+```
+
+若未設定 API key，statusline 會自動隱藏天氣氣泡。
 
 ### 2.2 設定 Claude Code
 
@@ -136,9 +153,11 @@ MCP Server 讓 `/kilok` 指令可以讀取和寫入追蹤資料。沒有設定 M
 
 ---
 
-## 步驟 4：雲端同步（可選）
+## 步驟 4：設定 Turso 資料庫
 
-如果你需要多裝置同步或使用 Web 儀表板，需要設定 Turso 雲端資料庫。
+Kilok 使用 Turso 作為唯一的資料來源（Pure Remote 模式）。本機不再保留獨立的 SQLite 資料庫，所有資料直接寫入 Turso 雲端。
+
+> **⚠️ 重要**：若要使用 Web 儀表板或跨裝置同步，必須完成此步驟。
 
 ### 4.1 建立 Turso 資料庫
 
@@ -449,29 +468,33 @@ flowchart TB
 
     subgraph Operations["節流操作"]
         HB["心跳<br/>（60 秒）"]
-        SYNC["同步<br/>（5 分鐘）"]
         STATUS["狀態<br/>（10 秒快取）"]
     end
 
-    subgraph CLI["CLI"]
+    subgraph CLI["CLI / MCP Server"]
         TRACKER[claude-time-tracker]
+        MCP[claude-time-tracker-mcp]
     end
 
     subgraph Storage["資料儲存"]
-        LOCAL[(本機 SQLite)]
-        CLOUD[(Turso 雲端)]
+        CLOUD[(Turso Cloud<br/>唯一資料來源)]
+    end
+
+    subgraph Web["Web 儀表板"]
+        WEBAPP[SvelteKit App]
     end
 
     CC -->|"statusline<br/>每 5 秒"| WS
     WS --> HB
-    WS --> SYNC
     WS --> STATUS
     HB --> TRACKER
-    SYNC --> TRACKER
     STATUS --> TRACKER
-    TRACKER --> LOCAL
-    LOCAL <-->|"embedded replica"| CLOUD
+    TRACKER -->|"Pure Remote"| CLOUD
+    MCP -->|"Pure Remote"| CLOUD
+    WEBAPP --> CLOUD
 ```
+
+> **Pure Remote 模式**：CLI、MCP Server、Web 儀表板都直接連接 Turso 雲端，不再使用本機 SQLite。這避免了多 process 併發寫入的問題。
 
 ### 閒置偵測
 
