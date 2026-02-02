@@ -708,6 +708,12 @@ async fn cmd_statusline() -> Result<()> {
     let output = if let Some(ref cfg) = config {
         // Try to open database for time tracking (optional, don't fail if unavailable)
         let db = open_db(cfg).await.ok();
+
+        // Auto-start session if none exists (silently, don't fail statusline)
+        if let (Some(ref db), Some(ref cwd_path)) = (&db, &cwd) {
+            let _ = ensure_session_active(db, cwd_path, cfg).await;
+        }
+
         statusline::generate(&input, db.as_ref(), cfg).await
     } else {
         // No config available, generate minimal statusline
@@ -715,6 +721,37 @@ async fn cmd_statusline() -> Result<()> {
     };
 
     print!("{}", output);
+
+    Ok(())
+}
+
+/// Ensure there's an active session for the project, auto-starting if needed
+async fn ensure_session_active(db: &Database, project_path: &Path, config: &EffectiveConfig) -> Result<()> {
+    let path_str = project_path
+        .to_str()
+        .context("Invalid project path")?;
+
+    // Check if project exists
+    let project = match db.get_project_by_path(path_str).await? {
+        Some(p) => p,
+        None => {
+            // Project doesn't exist yet, create session (which also creates project)
+            tracker::start_session(db, project_path, config).await?;
+            return Ok(());
+        }
+    };
+
+    // Check if there's an active session
+    if db.get_active_session(project.id).await?.is_some() {
+        // Session exists, record heartbeat
+        if let Some(session) = db.get_active_session(project.id).await? {
+            db.record_heartbeat(session.id).await?;
+        }
+        return Ok(());
+    }
+
+    // No active session, start one
+    tracker::start_session(db, project_path, config).await?;
 
     Ok(())
 }
