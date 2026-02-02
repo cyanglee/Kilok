@@ -1,3 +1,4 @@
+import { redirect } from '@sveltejs/kit';
 import {
 	getClients,
 	getProjectsByClientId,
@@ -7,7 +8,13 @@ import {
 } from '$lib/server/db';
 import type { PageServerLoad } from './$types';
 
-export const load: PageServerLoad = async () => {
+export const load: PageServerLoad = async ({ cookies }) => {
+	// Authentication check
+	const session = cookies.get('admin_session');
+	if (session !== 'authenticated') {
+		throw redirect(303, '/admin/login');
+	}
+
 	const clients = await getClients();
 	const unassignedProjects = await getUnassignedProjects();
 	const currentYear = new Date().getFullYear();

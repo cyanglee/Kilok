@@ -6,7 +6,7 @@ export const load: PageServerLoad = async ({ cookies }) => {
 	// If already authenticated, redirect to admin dashboard
 	const session = cookies.get('admin_session');
 	if (session === 'authenticated') {
-		throw redirect(303, '/admin/clients');
+		throw redirect(303, '/dashboard');
 	}
 	return {};
 };
@@ -33,6 +33,6 @@ export const actions: Actions = {
 			maxAge: 60 * 60 * 24 * 7 // 7 days
 		});
 
-		throw redirect(303, '/admin/clients');
+		throw redirect(303, '/dashboard');
 	}
 };
