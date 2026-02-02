@@ -1,15 +1,33 @@
-import { createClient as createDbClient } from '@libsql/client';
-import { TURSO_DATABASE_URL, TURSO_AUTH_TOKEN } from '$env/static/private';
+import { createClient as createDbClient, type Client } from '@libsql/client';
+import { env } from '$env/dynamic/private';
 
-export const db = createDbClient({
-	url: TURSO_DATABASE_URL,
-	authToken: TURSO_AUTH_TOKEN
-});
+// Lazy initialization for Cloudflare Workers compatibility
+let _db: Client | null = null;
 
-// Schema migrations - run once on startup
+function getDb(): Client {
+	if (!_db) {
+		_db = createDbClient({
+			url: env.TURSO_DATABASE_URL!,
+			authToken: env.TURSO_AUTH_TOKEN
+		});
+		// Trigger schema migration in background (fire and forget)
+		ensureSchema().catch(console.error);
+	}
+	return _db;
+}
+
+// Helper to execute queries with lazy db initialization
+export const db = {
+	execute: (...args: Parameters<Client['execute']>) => getDb().execute(...args),
+	batch: (...args: Parameters<Client['batch']>) => getDb().batch(...args),
+	close: () => _db?.close()
+};
+
+// Schema migrations - run once per cold start
 let schemaInitialized = false;
 async function ensureSchema() {
 	if (schemaInitialized) return;
+	const db = getDb();
 	try {
 		// Add monthly_hours column to contracts table
 		await db.execute('ALTER TABLE contracts ADD COLUMN monthly_hours REAL DEFAULT 0');
@@ -53,8 +71,8 @@ async function ensureSchema() {
 	schemaInitialized = true;
 }
 
-// Initialize schema on module load
-ensureSchema().catch(console.error);
+// Export for manual initialization if needed
+export { ensureSchema };
 
 // Types matching Rust CLI models
 export interface Client {

@@ -1,6 +1,6 @@
 import { fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
-import { ADMIN_PASSWORD } from '$env/static/private';
+import { env } from '$env/dynamic/private';
 
 export const load: PageServerLoad = async ({ cookies }) => {
 	// If already authenticated, redirect to admin dashboard
@@ -20,7 +20,7 @@ export const actions: Actions = {
 			return fail(400, { error: '請輸入密碼' });
 		}
 
-		if (password !== ADMIN_PASSWORD) {
+		if (password !== env.ADMIN_PASSWORD) {
 			return fail(401, { error: '密碼錯誤' });
 		}
 
