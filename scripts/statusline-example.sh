@@ -112,17 +112,52 @@ TOKENS_DISPLAY="$(format_tokens $TOTAL_TOKENS)/$(format_tokens $CONTEXT_SIZE)"
 # 取得目前目錄名稱
 dir=$(basename "$cwd")
 
-# 取得 git 資訊
-git_branch=""
-git_status=""
-if git -C "$cwd" rev-parse --git-dir > /dev/null 2>&1; then
+# 取得 VCS 資訊（jj 優先於 git）
+vcs_type=""
+vcs_label=""
+vcs_status=""
+
+if [ -d "$cwd/.jj" ] || [ -d "$(cd "$cwd" 2>/dev/null && while [ ! -d .jj ] && [ "$PWD" != "/" ]; do cd ..; done; [ -d .jj ] && echo "$PWD/.jj")" ]; then
+    # jj repo
+    vcs_type="jj"
+    jj_info=$(jj log -r '@' --no-graph -T 'concat(change_id.short(8), "\n", bookmarks.join(","), "\n", if(empty, "empty", "modified"), "\n", if(conflict, "conflict", "clean"))' -R "$cwd" 2>/dev/null)
+
+    if [ -n "$jj_info" ]; then
+        jj_change_id=$(echo "$jj_info" | sed -n '1p')
+        jj_bookmarks=$(echo "$jj_info" | sed -n '2p')
+        jj_empty=$(echo "$jj_info" | sed -n '3p')
+        jj_conflict=$(echo "$jj_info" | sed -n '4p')
+
+        vcs_label="◇ ${jj_change_id}"
+
+        if [ -n "$jj_bookmarks" ]; then
+            # Show first bookmark
+            first_bm=$(echo "$jj_bookmarks" | sd ',.+' '' 2>/dev/null || echo "$jj_bookmarks" | cut -d',' -f1)
+            vcs_label="${vcs_label} ${first_bm}"
+        fi
+
+        if [ "$jj_empty" = "modified" ]; then
+            mod_count=$(jj diff --summary -R "$cwd" 2>/dev/null | wc -l | tr -d ' ')
+            if [ "$mod_count" -gt 0 ]; then
+                vcs_status="✎${mod_count}"
+            fi
+        fi
+
+        if [ "$jj_conflict" = "conflict" ]; then
+            vcs_status="${vcs_status} ⚡"
+        fi
+    fi
+elif git -C "$cwd" rev-parse --git-dir > /dev/null 2>&1; then
+    # git repo（現有邏輯）
+    vcs_type="git"
     git_branch=$(git -C "$cwd" branch --show-current 2>/dev/null)
+    vcs_label=" ${git_branch}"
 
     if ! git -C "$cwd" diff --quiet 2>/dev/null || ! git -C "$cwd" diff --cached --quiet 2>/dev/null; then
-        git_status="*"
+        vcs_status="*"
     fi
     if [ -n "$(git -C "$cwd" ls-files --others --exclude-standard 2>/dev/null | head -1)" ]; then
-        git_status="*"
+        vcs_status="*"
     fi
 
     upstream=$(git -C "$cwd" rev-parse --abbrev-ref '@{upstream}' 2>/dev/null)
@@ -131,11 +166,11 @@ if git -C "$cwd" rev-parse --git-dir > /dev/null 2>&1; then
         behind=$(git -C "$cwd" rev-list --count 'HEAD..@{upstream}' 2>/dev/null || echo 0)
 
         if [ "$ahead" -gt 0 ] && [ "$behind" -gt 0 ]; then
-            git_status="${git_status} ↕${ahead}/${behind}"
+            vcs_status="${vcs_status} ↕${ahead}/${behind}"
         elif [ "$ahead" -gt 0 ]; then
-            git_status="${git_status} ↑${ahead}"
+            vcs_status="${vcs_status} ↑${ahead}"
         elif [ "$behind" -gt 0 ]; then
-            git_status="${git_status} ↓${behind}"
+            vcs_status="${vcs_status} ↓${behind}"
         fi
     fi
 fi
@@ -181,16 +216,26 @@ output=""
 # 目錄（藍色）
 output="\033[34m${dir}\033[0m"
 
-# Git branch 含狀態（黃色，有變更時紅色）
-if [ -n "$git_branch" ]; then
-    if [[ "$git_status" == *"*"* ]]; then
-        dirty_indicator="\033[31m*\033[33m"
-        git_status_display="${git_status/\*/$dirty_indicator}"
+# VCS 狀態（黃色，jj 用青色）
+if [ -n "$vcs_label" ]; then
+    if [ "$vcs_type" = "jj" ]; then
+        # jj: 青色顯示 change_id + bookmarks + status
+        vcs_display="${vcs_label}"
+        if [ -n "$vcs_status" ]; then
+            vcs_display="${vcs_display} ${vcs_status}"
+        fi
+        output="$output \033[36m[${vcs_display}\033[36m]\033[0m"
     else
-        git_status_display="$git_status"
+        # git: 黃色顯示 branch + status（現有邏輯）
+        if [[ "$vcs_status" == *"*"* ]]; then
+            dirty_indicator="\033[31m*\033[33m"
+            vcs_status_display="${vcs_status/\*/$dirty_indicator}"
+        else
+            vcs_status_display="$vcs_status"
+        fi
+        vcs_status_display=$(echo "$vcs_status_display" | sed 's/↓/\\033[31m↓/g' | sed 's/↑/\\033[32m↑/g' | sed 's/↕/\\033[35m↕/g')
+        output="$output \033[33m[${vcs_label}${vcs_status_display}\033[33m]\033[0m"
     fi
-    git_status_display=$(echo "$git_status_display" | sed 's/↓/\\033[31m↓/g' | sed 's/↑/\\033[32m↑/g' | sed 's/↕/\\033[35m↕/g')
-    output="$output \033[33m[${git_branch}${git_status_display}\033[33m]\033[0m"
 fi
 
 # Time tracker 狀態（青色）- 只在追蹤目前專案時顯示
