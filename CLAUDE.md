@@ -11,8 +11,12 @@
 - **零侵入追蹤**：透過 Claude Code statusline hook 運作，無需任何手動操作
 - **Work Item 追蹤**：自動從 git branch 提取 issue ID，聚合工作項目時間
 - **Transcript 閒置偵測**：監控 Claude transcript 檔案的修改時間，精準判斷閒置狀態
+- **計費工時計算**：自動計算（原始 × 1.2，0.5h 為單位進位），支援手動覆寫
+- **月額度追蹤**：支援月結型合約，追蹤使用狀況與累計結轉
+- **客戶分享連結**：Token-based 公開頁面，讓客戶查看唯讀報告
 - **雲端同步（可選）**：支援 Turso embedded replica，多裝置同步
 - **MCP Server**：提供 Claude Code 內建工具，方便查詢和管理追蹤資料
+- **Web 儀表板**：SvelteKit 應用，支援客戶/專案/合約管理、工作項目編輯
 
 ---
 
@@ -21,21 +25,42 @@
 ```
 .
 ├── apps/
-│   └── web/              # SvelteKit 儀表板（開發中）
-├── crates/
-│   └── tracker/          # Rust CLI + MCP Server
+│   └── web/                    # SvelteKit 儀表板
 │       └── src/
-│           ├── main.rs       # CLI entry point
-│           ├── mcp/          # MCP Server implementation
-│           ├── tracker.rs    # Core tracking logic
-│           ├── db.rs         # SQLite/Turso database
-│           └── idle.rs       # Transcript-based idle detection
+│           ├── lib/
+│           │   ├── components/     # 共用 UI 元件
+│           │   │   ├── StatsCard.svelte
+│           │   │   ├── QuotaProgressBar.svelte
+│           │   │   ├── MonthlyChart.svelte
+│           │   │   ├── PeriodNavigation.svelte
+│           │   │   └── EmptyState.svelte
+│           │   ├── utils/          # 共用工具函式
+│           │   │   └── formatters.ts
+│           │   └── server/
+│           │       └── db.ts       # Turso 資料庫操作
+│           └── routes/
+│               ├── admin/          # 管理介面（需登入）
+│               ├── share/          # 公開分享頁面
+│               └── [clientSlug]/   # 客戶報告頁面
+├── crates/
+│   └── tracker/                # Rust CLI + MCP Server
+│       └── src/
+│           ├── main.rs         # CLI entry point
+│           ├── mcp/            # MCP Server implementation
+│           │   ├── main.rs     # MCP Server entry
+│           │   └── db_wrapper.rs
+│           ├── tracker.rs      # Core tracking logic
+│           ├── db.rs           # SQLite/Turso database
+│           ├── idle.rs         # Transcript-based idle detection
+│           ├── billable.rs     # 計費工時計算
+│           ├── statusline.rs   # Powerlevel10k-style statusline
+│           └── weather.rs      # 天氣顯示（可選）
 ├── docs/
-│   └── plans/            # 設計文件
+│   └── plans/                  # 設計文件
 ├── scripts/
-│   └── install.sh        # 安裝腳本
+│   └── install.sh              # 安裝腳本
 └── skill/
-    └── SKILL.md          # Claude Code slash command 定義
+    └── SKILL.md                # Claude Code slash command 定義
 ```
 
 ---
@@ -182,10 +207,72 @@ cargo run -p claude-time-tracker --bin claude-time-tracker-mcp
 
 | Tool | Description |
 |------|-------------|
+| `list_sessions` | 列出 sessions，包含 commit 資訊，用於產生完整報告 |
 | `list_work_items` | 列出工作項目，支援日期和專案篩選 |
 | `get_work_item` | 取得單一工作項目詳情 |
-| `create_work_item` | 建立/更新工作項目（儲存翻譯標題） |
-| `update_work_item` | 更新工作項目資料 |
+| `create_work_item` | 建立/更新工作項目（儲存翻譯標題和描述） |
+| `update_work_item` | 更新工作項目資料（標題、描述、完成日期、計費工時） |
+| `list_projects` | 列出所有追蹤的專案 |
+| `update_project` | 更新專案顯示名稱 |
+
+### MCP 回應欄位
+
+`list_sessions` 回應包含：
+- `project_name` - 專案顯示名稱
+- `branch` - Git branch
+- `work_item` - 從 branch 提取的工作項目 ID（可能為 null）
+- `active_seconds` - 活躍時間（秒）
+- `commits` - Commit 列表（若 `include_commits=true`）
+
+---
+
+## Web App 路由結構
+
+### 管理介面（需登入）
+
+| 路由 | 檔案 | 功能 |
+|------|------|------|
+| `/` | `+page.svelte` | 工時總覽，客戶列表 |
+| `/admin/clients` | `admin/clients/` | 客戶 CRUD |
+| `/admin/projects` | `admin/projects/` | 專案管理 |
+| `/admin/contracts` | `admin/contracts/` | 合約管理 |
+| `/[clientSlug]` | `[clientSlug]/` | 客戶年度報告 |
+| `/[clientSlug]/[period]` | `[clientSlug]/[period]/` | 客戶月報（可編輯） |
+
+### 公開分享頁面
+
+| 路由 | 檔案 | 功能 |
+|------|------|------|
+| `/share/[token]` | `share/[token]/` | 客戶年度報告（唯讀） |
+| `/share/[token]/[period]` | `share/[token]/[period]/` | 客戶月報（唯讀） |
+
+### 資料庫 Schema 重點
+
+```sql
+-- clients 表新增欄位
+share_token TEXT  -- 分享連結 token（自動產生）
+
+-- contracts 表新增欄位
+monthly_hours REAL DEFAULT 0  -- 月額度（0 表示使用年度總額）
+carried_over REAL DEFAULT 0   -- 年度結轉時數
+
+-- work_items 表新增欄位
+billable_hours REAL  -- 手動覆寫的計費工時（null 表示使用自動計算）
+```
+
+### 計費工時計算
+
+```typescript
+// apps/web/src/lib/billable.ts
+const MULTIPLIER = 1.2;
+const ROUND_UNIT = 0.5; // hours
+
+export function calculateBillableHours(rawSeconds: number): number {
+  const rawHours = rawSeconds / 3600;
+  const multiplied = rawHours * MULTIPLIER;
+  return Math.ceil(multiplied / ROUND_UNIT) * ROUND_UNIT;
+}
+```
 
 ---
 
