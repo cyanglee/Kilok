@@ -79,19 +79,15 @@ chmod +x ~/.local/bin/kilok-statusline.sh
 
 Kilok 提供 Powerlevel10k 風格的 statusline，使用圓角氣泡和 Nerd Font 圖示：
 
-```
-  專案目錄   main ✔   ⏱ 1h 23m   25°C ☁   Opus 4.5   ███░░ 45%   14:30:00
-```
+![Statusline Screenshot](docs/images/statusline.png)
 
 | 氣泡 | 說明 |
 |------|------|
-|  專案目錄 | 目前工作目錄（縮短顯示） |
-|  main ✔ | Git branch + 狀態（✔ 乾淨, ✘ 有變更, ↑↓ 與遠端差異） |
-| ⏱ 1h 23m | **Kilok 追蹤的活躍時間** |
-| 25°C ☁ | 天氣資訊（需設定 API key，見下方） |
-|  Opus 4.5 | 目前使用的 Claude 模型 |
-| ███░░ 45% | Context window 使用量 |
-| 14:30:00 | 目前時間 |
+| 📁 專案目錄 | 目前工作目錄（縮短顯示） |
+| 🔀 main | Git branch + 狀態（✔ 乾淨, ✘ 有變更, ↑↓ 與遠端差異） |
+| 🤖 Opus 4.5 68% | 目前使用的 Claude 模型 + Context 使用量 |
+| ⏱ 3h28m | **Kilok 追蹤的活躍時間** |
+| 🌡 14° ●70% | 天氣（溫度 + 降雨機率，需設定 API key） |
 
 > **注意**：需要安裝 [Nerd Font](https://www.nerdfonts.com/) 才能正確顯示圖示。
 
