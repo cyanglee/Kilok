@@ -16,13 +16,14 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-// Git status cache TTL in seconds
-const GIT_CACHE_TTL_SECS: u64 = 5;
+// VCS status cache TTL in seconds
+const VCS_CACHE_TTL_SECS: u64 = 5;
 
 // ===== Nerd Font Icons =====
 const ICON_APPLE: &str = "\u{f179}";      //
 const ICON_FOLDER: &str = "\u{f07b}";     //
 const ICON_GIT: &str = "\u{e725}";        //
+const ICON_JJ: &str = "◇";               // jj diamond
 const ICON_CHECK: &str = "\u{2714}";      // ✔
 const ICON_CROSS: &str = "\u{2718}";      // ✘
 const ICON_RUBY: &str = "\u{e791}";       //
@@ -67,8 +68,32 @@ pub struct ContextWindow {
     pub context_window_size: Option<u64>,
 }
 
+/// VCS type detected in a directory
+#[derive(Debug, PartialEq)]
+enum VcsType {
+    Jj,
+    Git,
+    None,
+}
+
+/// Detect VCS type by walking up directories.
+/// .jj/ takes priority over .git/ (jj's git-compatible mode has both).
+fn detect_vcs(path: &Path) -> VcsType {
+    let mut current = Some(path);
+    while let Some(dir) = current {
+        if dir.join(".jj").is_dir() {
+            return VcsType::Jj;
+        }
+        if dir.join(".git").exists() {
+            return VcsType::Git;
+        }
+        current = dir.parent();
+    }
+    VcsType::None
+}
+
 /// Git status information
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 struct GitStatus {
     branch: String,
     is_dirty: bool,
@@ -79,10 +104,27 @@ struct GitStatus {
     behind: usize,
 }
 
-/// Cached git status with timestamp
+/// jj (Jujutsu) status information
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
+struct JjStatus {
+    change_id: String,
+    bookmarks: Vec<String>,
+    is_empty: bool,
+    has_conflict: bool,
+    modified_count: usize,
+}
+
+/// Cached VCS status with timestamp (tagged enum for git/jj)
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct CachedGitStatus {
-    status: GitStatus,
+#[serde(tag = "type")]
+enum CachedVcsStatus {
+    Git(GitStatus),
+    Jj(JjStatus),
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct VcsCache {
+    status: CachedVcsStatus,
     #[serde(with = "chrono::serde::ts_seconds")]
     cached_at: chrono::DateTime<chrono::Utc>,
 }
@@ -100,15 +142,35 @@ pub fn generate_minimal(input: &StatuslineInput) -> String {
 
     out.push(' ');
 
-    // === Bubble 2: Git (Dark surface) ===
-    let git_status = get_git_status(&cwd_path);
-    if let Some(ref gs) = git_status {
-        let mut git_content = format!("{} {}", ICON_GIT, gs.branch);
-        if gs.staged > 0 || gs.unstaged > 0 || gs.untracked > 0 {
-            git_content.push_str(" ≢");
+    // === Bubble 2: VCS Status (Dark surface) ===
+    match detect_vcs(&cwd_path) {
+        VcsType::Jj => {
+            if let Some(ref js) = get_jj_status(&cwd_path) {
+                let mut jj_content = format!("{} {}", ICON_JJ, js.change_id);
+                if let Some(first_bm) = js.bookmarks.first() {
+                    jj_content.push_str(&format!(" {}", first_bm));
+                }
+                if js.modified_count > 0 {
+                    jj_content.push_str(" ≢");
+                }
+                if js.has_conflict {
+                    jj_content.push_str(" ⚡");
+                }
+                write_bubble(&mut out, BG_SURFACE, FG_TEXT, &jj_content);
+                out.push(' ');
+            }
         }
-        write_bubble(&mut out, BG_SURFACE, FG_TEXT, &git_content);
-        out.push(' ');
+        VcsType::Git => {
+            if let Some(ref gs) = get_git_status(&cwd_path) {
+                let mut git_content = format!("{} {}", ICON_GIT, gs.branch);
+                if gs.staged > 0 || gs.unstaged > 0 || gs.untracked > 0 {
+                    git_content.push_str(" ≢");
+                }
+                write_bubble(&mut out, BG_SURFACE, FG_TEXT, &git_content);
+                out.push(' ');
+            }
+        }
+        VcsType::None => {}
     }
 
     // === Bubble 3: Model + Context (Mauve/Purple) ===
@@ -138,43 +200,70 @@ pub async fn generate(input: &StatuslineInput, db: Option<&Database>, config: &E
 
     out.push(' ');
 
-    // === Bubble 2: Git (Dark surface) ===
-    let git_status = get_git_status(&cwd_path);
-    if let Some(ref gs) = git_status {
-        // Truncate branch name if too long (max 35 chars)
-        let branch_display = truncate_branch(&gs.branch, 35);
-        let mut git_content = format!("{} {}", ICON_GIT, branch_display);
+    // === Bubble 2: VCS Status (Dark surface) ===
+    match detect_vcs(&cwd_path) {
+        VcsType::Jj => {
+            if let Some(ref js) = get_jj_status(&cwd_path) {
+                let mut jj_content = format!("{} {}", ICON_JJ, js.change_id);
 
-        // Add detailed status indicators with clear labels
-        // ✚ staged (ready to commit), ✎ modified (not staged), ★ new files
-        let mut status_parts: Vec<String> = Vec::new();
-        if gs.staged > 0 {
-            status_parts.push(format!("✚{}", gs.staged));  // staged/ready
-        }
-        if gs.unstaged > 0 {
-            status_parts.push(format!("✎{}", gs.unstaged));  // modified/edited
-        }
-        if gs.untracked > 0 {
-            status_parts.push(format!("★{}", gs.untracked));  // untracked/new
-        }
-        if !status_parts.is_empty() {
-            git_content.push_str(&format!(" {}", status_parts.join(" ")));
-        }
+                // Show bookmarks (space-separated)
+                for bm in &js.bookmarks {
+                    jj_content.push_str(&format!(" {}", truncate_branch(bm, 25)));
+                }
 
-        // Add ahead/behind indicators: ⇡ahead ⇣behind
-        if gs.ahead > 0 || gs.behind > 0 {
-            let mut sync_parts: Vec<String> = Vec::new();
-            if gs.ahead > 0 {
-                sync_parts.push(format!("⇡{}", gs.ahead));
+                // Modified file count (jj has no staging area)
+                if js.modified_count > 0 {
+                    jj_content.push_str(&format!(" ✎{}", js.modified_count));
+                }
+
+                // Conflict indicator
+                if js.has_conflict {
+                    jj_content.push_str(" ⚡");
+                }
+
+                write_bubble(&mut out, BG_SURFACE, FG_TEXT, &jj_content);
+                out.push(' ');
             }
-            if gs.behind > 0 {
-                sync_parts.push(format!("⇣{}", gs.behind));
-            }
-            git_content.push_str(&format!(" {}", sync_parts.join("")));
         }
+        VcsType::Git => {
+            if let Some(ref gs) = get_git_status(&cwd_path) {
+                // Truncate branch name if too long (max 35 chars)
+                let branch_display = truncate_branch(&gs.branch, 35);
+                let mut git_content = format!("{} {}", ICON_GIT, branch_display);
 
-        write_bubble(&mut out, BG_SURFACE, FG_TEXT, &git_content);
-        out.push(' ');
+                // Add detailed status indicators with clear labels
+                // ✚ staged (ready to commit), ✎ modified (not staged), ★ new files
+                let mut status_parts: Vec<String> = Vec::new();
+                if gs.staged > 0 {
+                    status_parts.push(format!("✚{}", gs.staged));  // staged/ready
+                }
+                if gs.unstaged > 0 {
+                    status_parts.push(format!("✎{}", gs.unstaged));  // modified/edited
+                }
+                if gs.untracked > 0 {
+                    status_parts.push(format!("★{}", gs.untracked));  // untracked/new
+                }
+                if !status_parts.is_empty() {
+                    git_content.push_str(&format!(" {}", status_parts.join(" ")));
+                }
+
+                // Add ahead/behind indicators: ⇡ahead ⇣behind
+                if gs.ahead > 0 || gs.behind > 0 {
+                    let mut sync_parts: Vec<String> = Vec::new();
+                    if gs.ahead > 0 {
+                        sync_parts.push(format!("⇡{}", gs.ahead));
+                    }
+                    if gs.behind > 0 {
+                        sync_parts.push(format!("⇣{}", gs.behind));
+                    }
+                    git_content.push_str(&format!(" {}", sync_parts.join("")));
+                }
+
+                write_bubble(&mut out, BG_SURFACE, FG_TEXT, &git_content);
+                out.push(' ');
+            }
+        }
+        VcsType::None => {}
     }
 
     // === Bubble 3: Model + Tools (Blue) ===
@@ -318,7 +407,7 @@ fn get_cache_path(path: &Path) -> PathBuf {
     let cache_dir = dirs::cache_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join("claude-time-tracker")
-        .join("git-status");
+        .join("vcs-status");
 
     // Create cache directory if it doesn't exist
     let _ = fs::create_dir_all(&cache_dir);
@@ -326,34 +415,26 @@ fn get_cache_path(path: &Path) -> PathBuf {
     cache_dir.join(format!("{:x}.json", hash))
 }
 
-/// Try to read git status from cache
-fn read_git_cache(path: &Path) -> Option<GitStatus> {
+/// Try to read VCS status from cache
+fn read_vcs_cache(path: &Path) -> Option<CachedVcsStatus> {
     let cache_path = get_cache_path(path);
     let content = fs::read_to_string(&cache_path).ok()?;
-    let cached: CachedGitStatus = serde_json::from_str(&content).ok()?;
+    let cached: VcsCache = serde_json::from_str(&content).ok()?;
 
     // Check if cache is still valid
     let age = (Utc::now() - cached.cached_at).num_seconds();
-    if age >= 0 && age < GIT_CACHE_TTL_SECS as i64 {
+    if age >= 0 && age < VCS_CACHE_TTL_SECS as i64 {
         Some(cached.status)
     } else {
         None
     }
 }
 
-/// Write git status to cache
-fn write_git_cache(path: &Path, status: &GitStatus) {
+/// Write VCS status to cache
+fn write_vcs_cache(path: &Path, status: CachedVcsStatus) {
     let cache_path = get_cache_path(path);
-    let cached = CachedGitStatus {
-        status: GitStatus {
-            branch: status.branch.clone(),
-            is_dirty: status.is_dirty,
-            staged: status.staged,
-            unstaged: status.unstaged,
-            untracked: status.untracked,
-            ahead: status.ahead,
-            behind: status.behind,
-        },
+    let cached = VcsCache {
+        status,
         cached_at: Utc::now(),
     };
 
@@ -365,7 +446,7 @@ fn write_git_cache(path: &Path, status: &GitStatus) {
 /// Get git status for a directory (with caching)
 fn get_git_status(path: &Path) -> Option<GitStatus> {
     // Try cache first
-    if let Some(cached) = read_git_cache(path) {
+    if let Some(CachedVcsStatus::Git(cached)) = read_vcs_cache(path) {
         return Some(cached);
     }
 
@@ -400,9 +481,79 @@ fn get_git_status(path: &Path) -> Option<GitStatus> {
     };
 
     // Write to cache
-    write_git_cache(path, &status);
+    write_vcs_cache(path, CachedVcsStatus::Git(status.clone()));
 
     Some(status)
+}
+
+/// Get jj (Jujutsu) status for a directory (with caching)
+fn get_jj_status(path: &Path) -> Option<JjStatus> {
+    // Try cache first
+    if let Some(CachedVcsStatus::Jj(cached)) = read_vcs_cache(path) {
+        return Some(cached);
+    }
+
+    // Cache miss - fetch fresh status via jj CLI
+    let status = fetch_jj_status(path)?;
+
+    // Write to cache
+    write_vcs_cache(path, CachedVcsStatus::Jj(status.clone()));
+
+    Some(status)
+}
+
+/// Fetch jj status from CLI
+fn fetch_jj_status(path: &Path) -> Option<JjStatus> {
+    use std::process::Command;
+
+    // Get change_id, bookmarks, empty/conflict status in one call
+    let template = r#"concat(change_id.short(8), "\n", bookmarks.join(","), "\n", if(empty, "empty", "modified"), "\n", if(conflict, "conflict", "clean"))"#;
+    let log_output = Command::new("jj")
+        .args(["log", "-r", "@", "--no-graph", "-T", template, "-R", &path.to_string_lossy()])
+        .output()
+        .ok()?;
+
+    if !log_output.status.success() {
+        return None;
+    }
+
+    let log_str = String::from_utf8_lossy(&log_output.stdout);
+    let lines: Vec<&str> = log_str.trim().lines().collect();
+    if lines.len() < 4 {
+        return None;
+    }
+
+    let change_id = lines[0].to_string();
+    let bookmarks: Vec<String> = lines[1]
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.trim().to_string())
+        .collect();
+    let is_empty = lines[2] == "empty";
+    let has_conflict = lines[3] == "conflict";
+
+    // Get modified file count from jj diff --summary
+    let diff_output = Command::new("jj")
+        .args(["diff", "--summary", "-R", &path.to_string_lossy()])
+        .output()
+        .ok()?;
+
+    let modified_count = if diff_output.status.success() {
+        String::from_utf8_lossy(&diff_output.stdout)
+            .trim()
+            .lines()
+            .count()
+    } else {
+        0
+    };
+
+    Some(JjStatus {
+        change_id,
+        bookmarks,
+        is_empty,
+        has_conflict,
+        modified_count,
+    })
 }
 
 /// Get git file status counts using single git status --porcelain call
