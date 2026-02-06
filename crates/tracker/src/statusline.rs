@@ -68,28 +68,31 @@ pub struct ContextWindow {
     pub context_window_size: Option<u64>,
 }
 
-/// VCS type detected in a directory
-#[derive(Debug, PartialEq)]
-enum VcsType {
-    Jj,
-    Git,
-    None,
+/// Detected VCS presence in a directory (both can be true for jj+git repos)
+#[derive(Debug, Default)]
+struct VcsPresence {
+    has_jj: bool,
+    has_git: bool,
 }
 
-/// Detect VCS type by walking up directories.
-/// .jj/ takes priority over .git/ (jj's git-compatible mode has both).
-fn detect_vcs(path: &Path) -> VcsType {
+/// Detect all VCS systems present by walking up directories.
+/// In jj's git-compatible mode, both .jj/ and .git/ coexist.
+fn detect_vcs(path: &Path) -> VcsPresence {
+    let mut presence = VcsPresence::default();
     let mut current = Some(path);
     while let Some(dir) = current {
-        if dir.join(".jj").is_dir() {
-            return VcsType::Jj;
+        if !presence.has_jj && dir.join(".jj").is_dir() {
+            presence.has_jj = true;
         }
-        if dir.join(".git").exists() {
-            return VcsType::Git;
+        if !presence.has_git && dir.join(".git").exists() {
+            presence.has_git = true;
+        }
+        if presence.has_jj && presence.has_git {
+            break;
         }
         current = dir.parent();
     }
-    VcsType::None
+    presence
 }
 
 /// Git status information
@@ -142,38 +145,38 @@ pub fn generate_minimal(input: &StatuslineInput) -> String {
 
     out.push(' ');
 
-    // === Bubble 2: VCS Status (Dark surface) ===
-    match detect_vcs(&cwd_path) {
-        VcsType::Jj => {
-            if let Some(ref js) = get_jj_status(&cwd_path) {
-                let mut jj_content = format!("{} {}", ICON_JJ, js.change_id);
-                if let Some(first_bm) = js.bookmarks.first() {
-                    jj_content.push_str(&format!(" {}", first_bm));
-                }
-                if js.modified_count > 0 {
-                    jj_content.push_str(" ≢");
-                }
-                if js.has_conflict {
-                    jj_content.push_str(" ⚡");
-                }
-                write_bubble(&mut out, BG_SURFACE, FG_TEXT, &jj_content);
-                out.push(' ');
+    // === Bubble 2+3: VCS Status (separate bubbles for jj and git) ===
+    let vcs = detect_vcs(&cwd_path);
+
+    if vcs.has_jj {
+        if let Some(ref js) = get_jj_status(&cwd_path) {
+            let mut jj_content = format!("{} {}", ICON_JJ, js.change_id);
+            if let Some(first_bm) = js.bookmarks.first() {
+                jj_content.push_str(&format!(" {}", first_bm));
             }
-        }
-        VcsType::Git => {
-            if let Some(ref gs) = get_git_status(&cwd_path) {
-                let mut git_content = format!("{} {}", ICON_GIT, gs.branch);
-                if gs.staged > 0 || gs.unstaged > 0 || gs.untracked > 0 {
-                    git_content.push_str(" ≢");
-                }
-                write_bubble(&mut out, BG_SURFACE, FG_TEXT, &git_content);
-                out.push(' ');
+            if js.modified_count > 0 {
+                jj_content.push_str(" ≢");
             }
+            if js.has_conflict {
+                jj_content.push_str(" ⚡");
+            }
+            write_bubble(&mut out, BG_SURFACE, FG_TEXT, &jj_content);
+            out.push(' ');
         }
-        VcsType::None => {}
     }
 
-    // === Bubble 3: Model + Context (Mauve/Purple) ===
+    if vcs.has_git {
+        if let Some(ref gs) = get_git_status(&cwd_path) {
+            let mut git_content = format!("{} {}", ICON_GIT, gs.branch);
+            if gs.staged > 0 || gs.unstaged > 0 || gs.untracked > 0 {
+                git_content.push_str(" ≢");
+            }
+            write_bubble(&mut out, BG_SURFACE, FG_TEXT, &git_content);
+            out.push(' ');
+        }
+    }
+
+    // === Model + Context (Mauve/Purple) ===
     let model_name = extract_model_name(input);
     let mut info_content = format!("{} {}", ICON_CHIP, model_name);
 
@@ -200,73 +203,73 @@ pub async fn generate(input: &StatuslineInput, db: Option<&Database>, config: &E
 
     out.push(' ');
 
-    // === Bubble 2: VCS Status (Dark surface) ===
-    match detect_vcs(&cwd_path) {
-        VcsType::Jj => {
-            if let Some(ref js) = get_jj_status(&cwd_path) {
-                let mut jj_content = format!("{} {}", ICON_JJ, js.change_id);
+    // === Bubble 2+3: VCS Status (separate bubbles for jj and git) ===
+    let vcs = detect_vcs(&cwd_path);
 
-                // Show bookmarks (space-separated)
-                for bm in &js.bookmarks {
-                    jj_content.push_str(&format!(" {}", truncate_branch(bm, 25)));
-                }
+    if vcs.has_jj {
+        if let Some(ref js) = get_jj_status(&cwd_path) {
+            let mut jj_content = format!("{} {}", ICON_JJ, js.change_id);
 
-                // Modified file count (jj has no staging area)
-                if js.modified_count > 0 {
-                    jj_content.push_str(&format!(" ✎{}", js.modified_count));
-                }
-
-                // Conflict indicator
-                if js.has_conflict {
-                    jj_content.push_str(" ⚡");
-                }
-
-                write_bubble(&mut out, BG_SURFACE, FG_TEXT, &jj_content);
-                out.push(' ');
+            // Show bookmarks (space-separated)
+            for bm in &js.bookmarks {
+                jj_content.push_str(&format!(" {}", truncate_branch(bm, 25)));
             }
-        }
-        VcsType::Git => {
-            if let Some(ref gs) = get_git_status(&cwd_path) {
-                // Truncate branch name if too long (max 35 chars)
-                let branch_display = truncate_branch(&gs.branch, 35);
-                let mut git_content = format!("{} {}", ICON_GIT, branch_display);
 
-                // Add detailed status indicators with clear labels
-                // ✚ staged (ready to commit), ✎ modified (not staged), ★ new files
-                let mut status_parts: Vec<String> = Vec::new();
-                if gs.staged > 0 {
-                    status_parts.push(format!("✚{}", gs.staged));  // staged/ready
-                }
-                if gs.unstaged > 0 {
-                    status_parts.push(format!("✎{}", gs.unstaged));  // modified/edited
-                }
-                if gs.untracked > 0 {
-                    status_parts.push(format!("★{}", gs.untracked));  // untracked/new
-                }
-                if !status_parts.is_empty() {
-                    git_content.push_str(&format!(" {}", status_parts.join(" ")));
-                }
-
-                // Add ahead/behind indicators: ⇡ahead ⇣behind
-                if gs.ahead > 0 || gs.behind > 0 {
-                    let mut sync_parts: Vec<String> = Vec::new();
-                    if gs.ahead > 0 {
-                        sync_parts.push(format!("⇡{}", gs.ahead));
-                    }
-                    if gs.behind > 0 {
-                        sync_parts.push(format!("⇣{}", gs.behind));
-                    }
-                    git_content.push_str(&format!(" {}", sync_parts.join("")));
-                }
-
-                write_bubble(&mut out, BG_SURFACE, FG_TEXT, &git_content);
-                out.push(' ');
+            // Modified file count (jj has no staging area)
+            if js.modified_count > 0 {
+                jj_content.push_str(&format!(" ✎{}", js.modified_count));
             }
+
+            // Conflict indicator
+            if js.has_conflict {
+                jj_content.push_str(" ⚡");
+            }
+
+            write_bubble(&mut out, BG_SURFACE, FG_TEXT, &jj_content);
+            out.push(' ');
         }
-        VcsType::None => {}
     }
 
-    // === Bubble 3: Model + Tools (Blue) ===
+    if vcs.has_git {
+        if let Some(ref gs) = get_git_status(&cwd_path) {
+            // Truncate branch name if too long (max 35 chars)
+            let branch_display = truncate_branch(&gs.branch, 35);
+            let mut git_content = format!("{} {}", ICON_GIT, branch_display);
+
+            // Add detailed status indicators with clear labels
+            // ✚ staged (ready to commit), ✎ modified (not staged), ★ new files
+            let mut status_parts: Vec<String> = Vec::new();
+            if gs.staged > 0 {
+                status_parts.push(format!("✚{}", gs.staged));  // staged/ready
+            }
+            if gs.unstaged > 0 {
+                status_parts.push(format!("✎{}", gs.unstaged));  // modified/edited
+            }
+            if gs.untracked > 0 {
+                status_parts.push(format!("★{}", gs.untracked));  // untracked/new
+            }
+            if !status_parts.is_empty() {
+                git_content.push_str(&format!(" {}", status_parts.join(" ")));
+            }
+
+            // Add ahead/behind indicators: ⇡ahead ⇣behind
+            if gs.ahead > 0 || gs.behind > 0 {
+                let mut sync_parts: Vec<String> = Vec::new();
+                if gs.ahead > 0 {
+                    sync_parts.push(format!("⇡{}", gs.ahead));
+                }
+                if gs.behind > 0 {
+                    sync_parts.push(format!("⇣{}", gs.behind));
+                }
+                git_content.push_str(&format!(" {}", sync_parts.join("")));
+            }
+
+            write_bubble(&mut out, BG_SURFACE, FG_TEXT, &git_content);
+            out.push(' ');
+        }
+    }
+
+    // === Model + Tools (Blue) ===
     let model_name = extract_model_name(input);
     let mut model_parts: Vec<String> = Vec::new();
 
